@@ -1,7 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { ContentCard, EmptyState, PageHeading, StatusPill } from "@/components/MisUi";
 import DashboardLayout from "@/components/DashboardLayout";
-import { SystemActivityLog } from "@/components/SystemActivityLog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
@@ -16,14 +15,13 @@ function GovernanceContent() {
   const allowed = user?.role === "admin";
   const utils = trpc.useUtils();
   const users = trpc.governance.users.useQuery(undefined, { enabled: allowed });
-  const audit = trpc.governance.auditLog.useQuery(undefined, { enabled: allowed });
   const updateRole = trpc.governance.updateRole.useMutation({ onSuccess: async () => { toast.success("Role updated and audit event recorded."); await utils.governance.users.invalidate(); await utils.governance.auditLog.invalidate(); }, onError: error => toast.error(error.message) });
 
   if (!allowed) return <><PageHeading eyebrow="Controlled access" title="Governance" description="Role management and audit review are limited to administrators." /><EmptyState icon={<ShieldCheck className="h-5 w-5" />} title="Governance access is restricted" detail="Institutional role changes affect access to sensitive records and are protected by a dedicated administrator permission." /></>;
 
   return (
     <>
-      <PageHeading eyebrow="Governance & audit" title="Institutional controls & activity log" description="Assign roles deliberately and track system-wide changes—including student record updates, admissions approvals, academic grading, and financial controls.">
+      <PageHeading eyebrow="Governance" title="Institutional controls" description="Assign roles deliberately to ensure least-privilege access across all institutional workflows.">
         <StatusPill tone="risk">Administrator only</StatusPill>
       </PageHeading>
 
@@ -38,15 +36,6 @@ function GovernanceContent() {
           <h2 className="mt-2 font-serif text-2xl tracking-[-0.03em] text-[#203950]">Every institutional change remains traceable.</h2>
           <p className="mt-3 text-sm leading-6 text-[#72747f]">Student creation and record updates, admissions decisions and confirmations, academic catalogue changes, attendance and grade actions, invoice and scholarship controls, and role assignments are recorded with actor, entity, metadata, and timestamp.</p>
         </ContentCard>
-      </section>
-
-      <section className="mt-6">
-        <SystemActivityLog
-          events={audit.data || []}
-          isLoading={audit.isLoading}
-          onRefresh={() => void audit.refetch()}
-          isRefreshing={audit.isFetching}
-        />
       </section>
 
       <section className="mt-6">

@@ -10,30 +10,13 @@ let _db: ReturnType<typeof drizzle> | null = null;
 // In-memory store when DATABASE_URL is not configured
 export const memoryDb = {
   users: [] as Array<typeof users.$inferSelect>,
-  departments: [
-    { id: 1, code: "CS", name: "Department of Computer Science", active: true, createdAt: new Date(), updatedAt: new Date() },
-    { id: 2, code: "BUS", name: "Department of Business & Governance", active: true, createdAt: new Date(), updatedAt: new Date() },
-  ] as Array<{ id: number; code: string; name: string; active: boolean; createdAt: Date; updatedAt: Date }>,
-  programmes: [
-    { id: 1, departmentId: 1, code: "BSC-CS", name: "BSc (Hons) Computer Science", awardType: "degree" as "certificate" | "diploma" | "degree" | "postgraduate", durationTerms: 6, active: true, createdAt: new Date(), updatedAt: new Date() },
-    { id: 2, departmentId: 2, code: "DIP-BA", name: "Diploma in Business Administration", awardType: "diploma" as "certificate" | "diploma" | "degree" | "postgraduate", durationTerms: 4, active: true, createdAt: new Date(), updatedAt: new Date() },
-  ],
-  terms: [
-    { id: 1, code: "2026-AUT", name: "Autumn Term 2026", startsAt: new Date("2026-09-01"), endsAt: new Date("2026-12-18"), status: "active" as "planned" | "active" | "closed", createdAt: new Date(), updatedAt: new Date() },
-  ],
-  courses: [
-    { id: 1, departmentId: 1, code: "CS101", title: "Foundations of Software Engineering", description: "Core software systems, architecture, and verification.", credits: 15, level: 4, active: true, createdAt: new Date(), updatedAt: new Date() },
-    { id: 2, departmentId: 1, code: "CS204", title: "Relational Databases & Distributed Ledger Systems", description: "Data modelling, relational integrity, and transaction processing.", credits: 15, level: 5, active: true, createdAt: new Date(), updatedAt: new Date() },
-  ],
+  departments: [] as Array<{ id: number; code: string; name: string; active: boolean; createdAt: Date; updatedAt: Date }>,
+  programmes: [] as Array<{ id: number; departmentId: number; code: string; name: string; awardType: "certificate" | "diploma" | "degree" | "postgraduate"; durationTerms: number; active: boolean; createdAt: Date; updatedAt: Date }>,
+  terms: [] as Array<{ id: number; code: string; name: string; startsAt: Date; endsAt: Date; status: "planned" | "active" | "closed"; createdAt: Date; updatedAt: Date }>,
+  courses: [] as Array<{ id: number; departmentId: number; code: string; title: string; description: string | null; credits: number; level: number; active: boolean; createdAt: Date; updatedAt: Date }>,
   coursePrerequisites: [] as Array<{ id: number; courseId: number; prerequisiteCourseId: number }>,
-  offerings: [
-    { id: 1, courseId: 1, termId: 1, section: "A", modality: "in_person" as "in_person" | "online" | "hybrid", meetingPattern: "Mon/Wed 09:00–10:30", room: "Lecture Hall 201", capacity: 45, status: "open" as "draft" | "open" | "closed" | "cancelled", createdAt: new Date(), updatedAt: new Date() },
-    { id: 2, courseId: 2, termId: 1, section: "A", modality: "hybrid" as "in_person" | "online" | "hybrid", meetingPattern: "Tue/Thu 14:00–15:30", room: "Lab 104", capacity: 35, status: "open" as "draft" | "open" | "closed" | "cancelled", createdAt: new Date(), updatedAt: new Date() },
-  ],
-  classMeetings: [
-    { id: 1, courseOfferingId: 1, weekday: "monday" as "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday", startsAt: "09:00", endsAt: "10:30", room: "Lecture Hall 201", createdAt: new Date() },
-    { id: 2, courseOfferingId: 1, weekday: "wednesday" as "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday", startsAt: "09:00", endsAt: "10:30", room: "Lecture Hall 201", createdAt: new Date() },
-  ],
+  offerings: [] as Array<{ id: number; courseId: number; termId: number; section: string; modality: "in_person" | "online" | "hybrid"; meetingPattern: string | null; room: string | null; capacity: number; status: "draft" | "open" | "closed" | "cancelled"; createdAt: Date; updatedAt: Date }>,
+  classMeetings: [] as Array<{ id: number; courseOfferingId: number; weekday: "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday"; startsAt: string; endsAt: string; room: string | null; createdAt: Date }>,
   students: [] as Array<typeof students.$inferSelect>,
   enrollments: [] as Array<typeof import("../drizzle/schema").enrollments.$inferSelect>,
   facultyAssignments: [] as Array<typeof import("../drizzle/schema").facultyAssignments.$inferSelect>,
@@ -49,58 +32,7 @@ export const memoryDb = {
   staffProfiles: [] as Array<typeof staffProfiles.$inferSelect>,
   studentRequests: [] as Array<typeof import("../drizzle/schema").studentRequests.$inferSelect>,
   documents: [] as Array<typeof import("../drizzle/schema").documents.$inferSelect>,
-  auditEvents: [
-    {
-      id: 5,
-      actorUserId: null,
-      action: "student.updated",
-      entityType: "student",
-      entityId: "1",
-      summary: "Updated student record LOCAL-STUDENT-001 (status: active, programme: BSC-CS).",
-      metadata: { studentNumber: "LOCAL-STUDENT-001", status: "active", programmeCode: "BSC-CS", updatedFields: ["status", "programmeId"] },
-      occurredAt: new Date(Date.now() - 1000 * 60 * 12),
-    },
-    {
-      id: 4,
-      actorUserId: null,
-      action: "applicant.admitted",
-      entityType: "applicant",
-      entityId: "101",
-      summary: "Recorded admitted decision for applicant APP-2026-014 (BSc Computer Science).",
-      metadata: { applicantNumber: "APP-2026-014", decision: "admitted", programmeCode: "BSC-CS" },
-      occurredAt: new Date(Date.now() - 1000 * 60 * 38),
-    },
-    {
-      id: 3,
-      actorUserId: null,
-      action: "application.details_verified",
-      entityType: "applicant",
-      entityId: "101",
-      summary: "Verified submitted application details and fee settlement for applicant APP-2026-014.",
-      metadata: { applicantNumber: "APP-2026-014", feeSettled: true },
-      occurredAt: new Date(Date.now() - 1000 * 60 * 65),
-    },
-    {
-      id: 2,
-      actorUserId: null,
-      action: "courseOffering.created",
-      entityType: "courseOffering",
-      entityId: "1",
-      summary: "Created section A for course CS101 (Autumn Term 2026, capacity 45).",
-      metadata: { courseCode: "CS101", section: "A", capacity: 45, modality: "in_person" },
-      occurredAt: new Date(Date.now() - 1000 * 60 * 140),
-    },
-    {
-      id: 1,
-      actorUserId: null,
-      action: "role.updated",
-      entityType: "user",
-      entityId: "1",
-      summary: "Verified institutional administrator governance permissions.",
-      metadata: { role: "admin", scope: "institution-wide" },
-      occurredAt: new Date(Date.now() - 1000 * 60 * 240),
-    },
-  ] as Array<typeof import("../drizzle/schema").auditEvents.$inferSelect>,
+  auditEvents: [] as Array<typeof import("../drizzle/schema").auditEvents.$inferSelect>,
 };
 
 let _dbChecked = false;
@@ -275,27 +207,17 @@ async function ensureLocalStudentRecord(
       studentNumber: "LOCAL-STUDENT-001",
       legalFirstName: "Sam",
       legalLastName: "Student",
-      preferredName: "Sam",
+      preferredName: null,
       institutionalEmail: user.email || "sam.student@local.college.test",
-      phone: "+44 20 7946 0192",
-      emergencyContactName: "Pat Student",
-      emergencyContactPhone: "+44 20 7946 0199",
-      programmeId: 1,
-      admissionTermId: 1,
+      phone: null,
+      emergencyContactName: null,
+      emergencyContactPhone: null,
+      programmeId: null,
+      admissionTermId: null,
       status: "active",
       createdAt: now,
       updatedAt: now,
     });
-    if (memoryDb.enrollments.length === 0) {
-      memoryDb.enrollments.push({
-        id: 1,
-        studentId,
-        courseOfferingId: 1,
-        status: "registered",
-        registeredAt: now,
-        updatedAt: now,
-      });
-    }
     return;
   }
   const [existingStudent] = await db.select().from(students).where(eq(students.userId, user.id)).limit(1);
@@ -328,15 +250,6 @@ export async function getOrCreateLocalUser(role: LocalIdentityRole, databaseOver
       memoryDb.users.push(localUser);
     }
     if (shouldProvisionLocalStudentRecord(role)) await ensureLocalStudentRecord(null, localUser);
-    if (role === "faculty" && !memoryDb.facultyAssignments.some(a => a.facultyUserId === localUser.id)) {
-      memoryDb.facultyAssignments.push({
-        id: memoryDb.facultyAssignments.length + 1,
-        courseOfferingId: 1,
-        facultyUserId: localUser.id,
-        assignmentRole: "instructor",
-        assignedAt: new Date(),
-      });
-    }
     return localUser;
   }
   const [existing] = await db.select().from(users).where(eq(users.openId, openId)).limit(1);

@@ -40,7 +40,7 @@ import {
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
-import { LocalAccessSelector, LocalRoleSwitcher, LocalRoleUrlBootstrap } from "./LocalAccessSelector";
+import { LocalRoleUrlBootstrap } from "./LocalAccessSelector";
 import { Button } from "./ui/button";
 
 const SIDEBAR_WIDTH_KEY = "college-mis-sidebar-width";
@@ -107,7 +107,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <Button onClick={() => startLogin()} size="lg" className="mt-8 h-12 rounded-xl bg-[#0f2740] px-5 text-white hover:bg-[#193957]">
             Sign in securely
           </Button>
-          <LocalAccessSelector />
         </div>
       </div>
     </>;
@@ -215,7 +214,6 @@ function DashboardLayoutContent({
               <div className="flex items-center gap-2 text-[11px] text-[#b9c5d0]"><Activity className="h-3.5 w-3.5 text-[#6fc8ba]" aria-hidden="true" /> Systems normal</div>
               <p className="mt-1 text-[10px] text-[#7890a8]">Secure institutional session</p>
             </div>
-            <LocalRoleSwitcher />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button className="flex w-full items-center gap-3 rounded-xl px-1 py-1 text-left transition-colors hover:bg-white/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#d9c27b] group-data-[collapsible=icon]:justify-center">

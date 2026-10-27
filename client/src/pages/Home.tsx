@@ -2,7 +2,6 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { ActionTile, ContentCard, EmptyState, MetricCard, PageHeading, StatusPill } from "@/components/MisUi";
 import DashboardLayout from "@/components/DashboardLayout";
 import { RoleOnboardingChecklist } from "@/components/RoleOnboardingChecklist";
-import { type AuditLogEntry, SystemActivityLog } from "@/components/SystemActivityLog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
 import {
@@ -32,7 +31,7 @@ type StaffOverview = {
   atRiskStudents: number;
   outstandingInvoices: number;
   applicationsInReview: number;
-  recentActivity: AuditLogEntry[];
+  recentActivity: Array<{ id: number; action: string; summary: string; entityType: string; occurredAt: Date | string }>;
 };
 
 type StudentOverview = {
@@ -61,7 +60,7 @@ function CommandCentre() {
       </PageHeading>
 
       {overview.isLoading ? <DashboardSkeleton /> : null}
-      {overview.data?.scope === "staff" ? <StaffDashboard data={overview.data} navigate={navigate} onRefresh={() => void overview.refetch()} isRefreshing={overview.isFetching} isAdmin={user?.role === "admin"} /> : null}
+      {overview.data?.scope === "staff" ? <StaffDashboard data={overview.data} navigate={navigate} /> : null}
       {overview.data?.scope === "faculty" ? <FacultyDashboard assignedOfferings={overview.data.assignedOfferings} navigate={navigate} /> : null}
       {overview.data?.scope === "student" ? <StudentDashboard data={overview.data} navigate={navigate} /> : null}
       {overview.data?.scope === "applicant" ? <ApplicantDashboard navigate={navigate} /> : null}
@@ -82,17 +81,10 @@ function DashboardSkeleton() {
 function StaffDashboard({
   data,
   navigate,
-  onRefresh,
-  isRefreshing,
-  isAdmin,
 }: {
   data: StaffOverview;
   navigate: (path: string) => void;
-  onRefresh: () => void;
-  isRefreshing: boolean;
-  isAdmin: boolean;
 }) {
-  const needsSetup = data.activeStudents + data.applicationsInReview + data.pendingGrades + data.recentActivity.length === 0;
   return (
     <div className="space-y-6">
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
@@ -102,17 +94,6 @@ function StaffDashboard({
         <MetricCard label="Grades pending" value={data.pendingGrades} detail="Draft results awaiting review" tone={data.pendingGrades ? "warning" : "good"} icon={<BookOpenCheck className="h-4 w-4" />} />
         <MetricCard label="At-risk students" value={data.atRiskStudents} detail="Flagged by absences or final results" tone={data.atRiskStudents ? "risk" : "good"} icon={<AlertTriangle className="h-4 w-4" />} />
       </section>
-
-      {needsSetup ? (
-        <ContentCard>
-          <EmptyState
-            icon={<GraduationCap className="h-5 w-5" />}
-            title="Begin with your academic foundation"
-            detail="The secure MIS is ready for institutional records. Create a department, term, programme, and course catalogue before registering students."
-            action={<button onClick={() => navigate("/academics")} className="rounded-xl bg-[#132b45] px-4 py-2.5 text-sm font-semibold text-white transition-transform duration-150 hover:bg-[#1c3b5c] active:scale-[0.97]">Open academic catalogue</button>}
-          />
-        </ContentCard>
-      ) : null}
 
       <section className="grid gap-6 xl:grid-cols-[1.25fr_0.85fr]">
         <ContentCard>
@@ -136,17 +117,9 @@ function StaffDashboard({
             <div className="flex justify-between"><span>Outstanding invoices</span><strong>{data.outstandingInvoices}</strong></div>
             <div className="flex justify-between"><span>Audit activity available</span><strong>{data.recentActivity.length}</strong></div>
           </div>
-          <button onClick={() => navigate("/governance")} className="mt-6 inline-flex items-center gap-1 text-xs font-semibold text-[#f0d889] hover:text-white">Review governance & activity log <ArrowRight className="h-3.5 w-3.5" /></button>
+          <button onClick={() => navigate("/governance")} className="mt-6 inline-flex items-center gap-1 text-xs font-semibold text-[#f0d889] hover:text-white">Review governance <ArrowRight className="h-3.5 w-3.5" /></button>
         </ContentCard>
       </section>
-
-      <SystemActivityLog
-        compact
-        events={data.recentActivity}
-        onRefresh={onRefresh}
-        isRefreshing={isRefreshing}
-        onViewAll={isAdmin ? () => navigate("/governance") : undefined}
-      />
     </div>
   );
 }
