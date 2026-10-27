@@ -4,9 +4,10 @@ import { randomUUID } from "node:crypto";
 import { ENV } from "./_core/env";
 
 let client: S3Client | undefined;
+const memoryStore = new Map<string, { data: string; contentType: string }>();
 
 function getStorage() {
-  if (!ENV.storageBucket) throw new Error("STORAGE_BUCKET is not configured.");
+  if (!ENV.storageBucket) return null;
   client ??= new S3Client({
     region: ENV.storageRegion,
     ...(ENV.storageEndpoint ? { endpoint: ENV.storageEndpoint } : {}),
@@ -31,14 +32,20 @@ export async function storagePut(
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream",
 ): Promise<{ key: string; url: string }> {
-  const { client, bucket } = getStorage();
   const normalizedKey = normalizeKey(relativeKey);
   const extension = normalizedKey.match(/\.[^./]+$/)?.[0] ?? "";
   const base = extension ? normalizedKey.slice(0, -extension.length) : normalizedKey;
   const key = `${base}_${randomUUID().replace(/-/g, "").slice(0, 12)}${extension}`;
 
-  await client.send(new PutObjectCommand({
-    Bucket: bucket,
+  const storage = getStorage();
+  if (!storage) {
+    const base64 = typeof data === "string" ? Buffer.from(data).toString("base64") : Buffer.from(data).toString("base64");
+    memoryStore.set(key, { data: base64, contentType });
+    return { key, url: `data:${contentType};base64,${base64}` };
+  }
+
+  await storage.client.send(new PutObjectCommand({
+    Bucket: storage.bucket,
     Key: key,
     Body: typeof data === "string" ? Buffer.from(data) : data,
     ContentType: contentType,
@@ -48,6 +55,12 @@ export async function storagePut(
 }
 
 export async function storageGetSignedUrl(relativeKey: string) {
-  const { client, bucket } = getStorage();
-  return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: normalizeKey(relativeKey) }), { expiresIn: 300 });
+  const key = normalizeKey(relativeKey);
+  const storage = getStorage();
+  if (!storage) {
+    const item = memoryStore.get(key);
+    if (item) return `data:${item.contentType};base64,${item.data}`;
+    return `#mock-storage-${key}`;
+  }
+  return getSignedUrl(storage.client, new GetObjectCommand({ Bucket: storage.bucket, Key: key }), { expiresIn: 300 });
 }
