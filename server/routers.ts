@@ -118,8 +118,37 @@ export const appRouter = router({
           entityType: "student",
           entityId: String(studentId),
           summary: `Created student record ${input.studentNumber}.`,
+          metadata: { studentNumber: input.studentNumber, status: input.status, programmeId: input.programmeId ?? null },
         });
         return { id: studentId };
+      }),
+    update: registrarProcedure
+      .input(
+        z.object({
+          studentId: id,
+          status: z.enum(["applicant", "active", "leave", "graduated", "withdrawn"]),
+          programmeId: id.nullable().optional(),
+          preferredName: optionalText(100),
+          institutionalEmail: z.string().trim().email().max(320).optional(),
+          phone: optionalText(40),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const updated = await misDb.updateStudent(input);
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "student.updated",
+          entityType: "student",
+          entityId: String(input.studentId),
+          summary: `Updated student record ${updated.studentNumber} (status: ${updated.previousStatus} → ${updated.status}${updated.programmeCode ? `, programme: ${updated.programmeCode}` : ""}).`,
+          metadata: {
+            studentNumber: updated.studentNumber,
+            previousStatus: updated.previousStatus,
+            status: updated.status,
+            programmeCode: updated.programmeCode,
+          },
+        });
+        return updated;
       }),
     academicRecord: registrarProcedure.input(z.object({ studentId: id })).query(({ input }) =>
       misDb.getAcademicRecord(input.studentId, true),
@@ -148,6 +177,10 @@ export const appRouter = router({
     register: registrarProcedure
       .input(z.object({ studentId: id, courseOfferingId: id }))
       .mutation(async ({ ctx, input }) => {
+        const policyCheck = await misDb.validateCourseRegistration(input.studentId, input.courseOfferingId);
+        if (!policyCheck.ok) {
+          throw new TRPCError({ code: policyCheck.code, message: policyCheck.message });
+        }
         const clashes = await misDb.findTimetableClashes(input.studentId, input.courseOfferingId);
         if (clashes.length) {
           throw new TRPCError({ code: "CONFLICT", message: `Registration blocked: timetable conflict with ${clashes.map(clash => `${clash.courseCode} section ${clash.section} (${clash.weekday} ${clash.startsAt}–${clash.endsAt})`).join(", ")}.` });
@@ -479,6 +512,20 @@ export const appRouter = router({
         const scholarshipId = await misDb.createScholarship({ ...input, approvedByUserId: ctx.user.id });
         await misDb.writeAuditEvent({ actorUserId: ctx.user.id, action: "scholarship.approved", entityType: "scholarship", entityId: String(scholarshipId), summary: `Approved scholarship ${input.name}.`, metadata: { studentId: input.studentId, amountCents: input.amountCents } });
         return { id: scholarshipId };
+      }),
+    applyScholarship: financeProcedure
+      .input(z.object({ scholarshipId: id, invoiceId: id }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await misDb.applyScholarshipToInvoice(input);
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "scholarship.applied",
+          entityType: "scholarship",
+          entityId: String(input.scholarshipId),
+          summary: `Applied scholarship ${result.scholarshipName} to invoice ${result.invoiceNumber}.`,
+          metadata: { invoiceId: input.invoiceId, appliedAmountCents: result.appliedAmountCents, newBalanceCents: result.newBalanceCents },
+        });
+        return result;
       }),
     waiveInvoice: financeProcedure
       .input(z.object({ invoiceId: id }))

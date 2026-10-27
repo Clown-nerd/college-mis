@@ -2,9 +2,9 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { ActionTile, ContentCard, EmptyState, MetricCard, PageHeading, StatusPill } from "@/components/MisUi";
 import DashboardLayout from "@/components/DashboardLayout";
 import { RoleOnboardingChecklist } from "@/components/RoleOnboardingChecklist";
+import { type AuditLogEntry, SystemActivityLog } from "@/components/SystemActivityLog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { format } from "date-fns";
 import {
   AlertTriangle,
   ArrowRight,
@@ -15,7 +15,6 @@ import {
   ClipboardList,
   FileBarChart2,
   GraduationCap,
-  ShieldCheck,
   UserRoundCheck,
   UsersRound,
 } from "lucide-react";
@@ -33,7 +32,7 @@ type StaffOverview = {
   atRiskStudents: number;
   outstandingInvoices: number;
   applicationsInReview: number;
-  recentActivity: Array<{ id: number; action: string; entityType: string; summary: string; occurredAt: Date }>;
+  recentActivity: AuditLogEntry[];
 };
 
 type StudentOverview = {
@@ -62,7 +61,7 @@ function CommandCentre() {
       </PageHeading>
 
       {overview.isLoading ? <DashboardSkeleton /> : null}
-      {overview.data?.scope === "staff" ? <StaffDashboard data={overview.data} navigate={navigate} /> : null}
+      {overview.data?.scope === "staff" ? <StaffDashboard data={overview.data} navigate={navigate} onRefresh={() => void overview.refetch()} isRefreshing={overview.isFetching} isAdmin={user?.role === "admin"} /> : null}
       {overview.data?.scope === "faculty" ? <FacultyDashboard assignedOfferings={overview.data.assignedOfferings} navigate={navigate} /> : null}
       {overview.data?.scope === "student" ? <StudentDashboard data={overview.data} navigate={navigate} /> : null}
       {overview.data?.scope === "applicant" ? <ApplicantDashboard navigate={navigate} /> : null}
@@ -80,7 +79,19 @@ function DashboardSkeleton() {
   return <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[1, 2, 3, 4].map(item => <Skeleton key={item} className="h-40 rounded-2xl bg-[#e7e2d8]" />)}</div>;
 }
 
-function StaffDashboard({ data, navigate }: { data: StaffOverview; navigate: (path: string) => void }) {
+function StaffDashboard({
+  data,
+  navigate,
+  onRefresh,
+  isRefreshing,
+  isAdmin,
+}: {
+  data: StaffOverview;
+  navigate: (path: string) => void;
+  onRefresh: () => void;
+  isRefreshing: boolean;
+  isAdmin: boolean;
+}) {
   const needsSetup = data.activeStudents + data.applicationsInReview + data.pendingGrades + data.recentActivity.length === 0;
   return (
     <div className="space-y-6">
@@ -119,22 +130,23 @@ function StaffDashboard({ data, navigate }: { data: StaffOverview; navigate: (pa
         <ContentCard className="bg-[#132b45] text-white">
           <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#d7bd71]">Institutional health</p>
           <h2 className="mt-2 font-serif text-2xl tracking-[-0.03em]">Reporting readiness</h2>
-          <p className="mt-3 text-sm leading-6 text-[#bdcbd7]">The dashboard only surfaces data entered through the institutional workflow. There are no simulated academic records.</p>
+          <p className="mt-3 text-sm leading-6 text-[#bdcbd7]">The dashboard only surfaces data entered through the institutional workflow. Every sensitive record update is logged.</p>
           <div className="mt-6 space-y-3 border-t border-white/10 pt-5 text-xs text-[#dbe3ea]">
             <div className="flex justify-between"><span>Applications in review</span><strong>{data.applicationsInReview}</strong></div>
             <div className="flex justify-between"><span>Outstanding invoices</span><strong>{data.outstandingInvoices}</strong></div>
             <div className="flex justify-between"><span>Audit activity available</span><strong>{data.recentActivity.length}</strong></div>
           </div>
-          <button onClick={() => navigate("/governance")} className="mt-6 inline-flex items-center gap-1 text-xs font-semibold text-[#f0d889] hover:text-white">Review governance <ArrowRight className="h-3.5 w-3.5" /></button>
+          <button onClick={() => navigate("/governance")} className="mt-6 inline-flex items-center gap-1 text-xs font-semibold text-[#f0d889] hover:text-white">Review governance & activity log <ArrowRight className="h-3.5 w-3.5" /></button>
         </ContentCard>
       </section>
 
-      <ContentCard>
-        <div className="flex items-center justify-between gap-4"><div><p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#98764a]">Protected audit stream</p><h2 className="mt-1 font-serif text-2xl tracking-[-0.03em] text-[#18324b]">Recent institutional activity</h2></div><ShieldCheck className="h-5 w-5 text-[#567b8d]" /></div>
-        {data.recentActivity.length ? (
-          <div className="mt-5 divide-y divide-[#e6e0d6]">{data.recentActivity.map(event => <div className="flex items-center justify-between gap-4 py-3" key={event.id}><div><p className="text-sm font-medium text-[#32475c]">{event.summary}</p><p className="mt-1 text-xs text-[#80818a]">{event.entityType} · {event.action}</p></div><time className="shrink-0 text-xs text-[#8c877d]">{format(new Date(event.occurredAt), "MMM d, HH:mm")}</time></div>)}</div>
-        ) : <p className="mt-5 text-sm leading-6 text-[#747682]">This secure log will document record and permission changes as users begin working in the system.</p>}
-      </ContentCard>
+      <SystemActivityLog
+        compact
+        events={data.recentActivity}
+        onRefresh={onRefresh}
+        isRefreshing={isRefreshing}
+        onViewAll={isAdmin ? () => navigate("/governance") : undefined}
+      />
     </div>
   );
 }

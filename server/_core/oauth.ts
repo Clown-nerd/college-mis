@@ -3,6 +3,7 @@ import { parse as parseCookieHeader } from "cookie";
 import type { Express, Request, Response } from "express";
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import * as db from "../db";
+import { localAuthEnabled } from "../localAuth";
 import { getSessionCookieOptions } from "./cookies";
 import { ENV } from "./env";
 import { createSessionToken } from "./sessions";
@@ -17,9 +18,15 @@ function redirectUrl(req: Request) {
   return `${req.protocol}://${req.get("host")}/api/oauth/callback`;
 }
 
-function requireOAuthConfiguration() {
+function isOAuthConfigured() {
   const values = [ENV.oauthAuthorizationUrl, ENV.oauthTokenUrl, ENV.oauthUserInfoUrl, ENV.oauthClientId];
-  if (values.some(value => !value)) throw new Error("Configure the OAuth authorization, token, user-info, and client ID settings.");
+  return values.every(value => Boolean(value));
+}
+
+function requireOAuthConfiguration() {
+  if (!isOAuthConfigured()) {
+    throw new Error("Configure the OAuth authorization, token, user-info, and client ID settings.");
+  }
 }
 
 function equalSecret(left: string | undefined, right: string | undefined) {
@@ -34,9 +41,30 @@ function pkceChallenge(verifier: string) {
 }
 
 export function registerOAuthRoutes(app: Express) {
-  app.get("/api/oauth/start", (req: Request, res: Response) => {
+  app.get("/api/oauth/start", async (req: Request, res: Response) => {
+    if (!isOAuthConfigured()) {
+      if (localAuthEnabled()) {
+        try {
+          const requestedRole = typeof req.query.role === "string" ? req.query.role : "admin";
+          const allowedRoles: db.LocalIdentityRole[] = ["applicant", "student", "faculty", "non_teaching", "finance", "registrar", "admin"];
+          const role = allowedRoles.includes(requestedRole as db.LocalIdentityRole)
+            ? (requestedRole as db.LocalIdentityRole)
+            : "admin";
+          const user = await db.getOrCreateLocalUser(role);
+          const session = await createSessionToken(user.openId);
+          res.cookie(COOKIE_NAME, session, { ...getSessionCookieOptions(req), maxAge: ONE_YEAR_MS });
+          res.redirect(302, "/");
+          return;
+        } catch {
+          res.redirect(302, "/");
+          return;
+        }
+      }
+      res.status(503).send("Institutional sign-in is not configured.");
+      return;
+    }
+
     try {
-      requireOAuthConfiguration();
       const state = randomBytes(32).toString("base64url");
       const verifier = randomBytes(48).toString("base64url");
       const authorization = new URL(ENV.oauthAuthorizationUrl);
@@ -51,8 +79,7 @@ export function registerOAuthRoutes(app: Express) {
       res.cookie(STATE_COOKIE, state, { ...LOGIN_COOKIE_OPTIONS, maxAge: 10 * 60 * 1000 });
       res.cookie(VERIFIER_COOKIE, verifier, { ...LOGIN_COOKIE_OPTIONS, maxAge: 10 * 60 * 1000 });
       res.redirect(302, authorization.toString());
-    } catch (error) {
-      console.error("[OAuth] Sign-in is not configured:", error);
+    } catch {
       res.status(503).send("Institutional sign-in is not configured.");
     }
   });

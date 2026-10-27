@@ -100,13 +100,22 @@ export async function getDashboardMetrics() {
       atRiskStudents: atRiskIds.size,
       outstandingInvoices,
       applicationsInReview,
-      recentActivity: memoryDb.auditEvents.slice(0, 5).map(e => ({
-        id: e.id,
-        action: e.action,
-        entityType: e.entityType,
-        summary: e.summary,
-        occurredAt: e.occurredAt,
-      })),
+      recentActivity: memoryDb.auditEvents.slice(0, 8).map(e => {
+        const actor = e.actorUserId ? memoryDb.users.find(u => u.id === e.actorUserId) : undefined;
+        return {
+          id: e.id,
+          actorUserId: e.actorUserId,
+          actorName: actor?.name ?? null,
+          actorEmail: actor?.email ?? null,
+          actorRole: actor?.role ?? null,
+          action: e.action,
+          entityType: e.entityType,
+          entityId: e.entityId,
+          summary: e.summary,
+          metadata: (e.metadata as Record<string, unknown> | null) ?? null,
+          occurredAt: e.occurredAt,
+        };
+      }),
     };
   }
 
@@ -143,14 +152,21 @@ export async function getDashboardMetrics() {
     db
       .select({
         id: auditEvents.id,
+        actorUserId: auditEvents.actorUserId,
+        actorName: users.name,
+        actorEmail: users.email,
+        actorRole: users.role,
         action: auditEvents.action,
         entityType: auditEvents.entityType,
+        entityId: auditEvents.entityId,
         summary: auditEvents.summary,
+        metadata: auditEvents.metadata,
         occurredAt: auditEvents.occurredAt,
       })
       .from(auditEvents)
+      .leftJoin(users, eq(auditEvents.actorUserId, users.id))
       .orderBy(desc(auditEvents.occurredAt))
-      .limit(5),
+      .limit(8),
   ]);
 
   const atRiskIds = new Set(
@@ -187,6 +203,7 @@ export async function listStudents() {
         institutionalEmail: s.institutionalEmail,
         phone: s.phone,
         status: s.status,
+        programmeId: s.programmeId ?? null,
         programmeName: prog?.name ?? null,
         programmeCode: prog?.code ?? null,
         departmentName: dept?.name ?? null,
@@ -205,6 +222,7 @@ export async function listStudents() {
       institutionalEmail: students.institutionalEmail,
       phone: students.phone,
       status: students.status,
+      programmeId: students.programmeId,
       programmeName: programmes.name,
       programmeCode: programmes.code,
       departmentName: departments.name,
@@ -256,6 +274,63 @@ export async function createStudent(input: {
 
   const result = await db.insert(students).values(input);
   return Number(result[0].insertId);
+}
+
+export async function updateStudent(input: {
+  studentId: number;
+  status: "applicant" | "active" | "leave" | "graduated" | "withdrawn";
+  programmeId?: number | null;
+  preferredName?: string;
+  institutionalEmail?: string;
+  phone?: string;
+}) {
+  const db = await getDb();
+  if (!db) {
+    const student = memoryDb.students.find(s => s.id === input.studentId);
+    if (!student) throw new Error("Student record was not found.");
+    const previousStatus = student.status;
+    student.status = input.status;
+    if (input.programmeId !== undefined) student.programmeId = input.programmeId;
+    if (input.preferredName !== undefined) student.preferredName = input.preferredName || null;
+    if (input.institutionalEmail !== undefined) student.institutionalEmail = input.institutionalEmail || null;
+    if (input.phone !== undefined) student.phone = input.phone || null;
+    student.updatedAt = new Date();
+    const prog = memoryDb.programmes.find(p => p.id === student.programmeId);
+    return {
+      studentNumber: student.studentNumber,
+      previousStatus,
+      status: student.status,
+      programmeCode: prog?.code ?? null,
+    };
+  }
+
+  const [existing] = await db.select().from(students).where(eq(students.id, input.studentId)).limit(1);
+  if (!existing) throw new Error("Student record was not found.");
+
+  await db
+    .update(students)
+    .set({
+      status: input.status,
+      programmeId: input.programmeId === undefined ? existing.programmeId : input.programmeId,
+      preferredName: input.preferredName === undefined ? existing.preferredName : input.preferredName || null,
+      institutionalEmail: input.institutionalEmail === undefined ? existing.institutionalEmail : input.institutionalEmail || null,
+      phone: input.phone === undefined ? existing.phone : input.phone || null,
+    })
+    .where(eq(students.id, input.studentId));
+
+  let programmeCode: string | null = null;
+  const targetProgId = input.programmeId === undefined ? existing.programmeId : input.programmeId;
+  if (targetProgId) {
+    const [prog] = await db.select({ code: programmes.code }).from(programmes).where(eq(programmes.id, targetProgId)).limit(1);
+    programmeCode = prog?.code ?? null;
+  }
+
+  return {
+    studentNumber: existing.studentNumber,
+    previousStatus: existing.status,
+    status: input.status,
+    programmeCode,
+  };
 }
 
 export async function listApplicants() {
@@ -934,9 +1009,173 @@ export async function getStudentSchedule(studentId: number) {
     .orderBy(academicTerms.startsAt, classMeetings.weekday, classMeetings.startsAt);
 }
 
+export async function validateCourseRegistration(studentId: number, courseOfferingId: number) {
+  const db = await getDb();
+  if (!db) {
+    const offering = memoryDb.offerings.find(o => o.id === courseOfferingId);
+    if (!offering) return { ok: false as const, code: "NOT_FOUND" as const, message: "Course offering was not found." };
+    if (offering.status !== "open") {
+      return { ok: false as const, code: "BAD_REQUEST" as const, message: `Course offering section ${offering.section} is currently ${offering.status} and not open for registration.` };
+    }
+    const alreadyEnrolled = memoryDb.enrollments.some(
+      e => e.studentId === studentId && e.courseOfferingId === courseOfferingId && (e.status === "registered" || e.status === "completed"),
+    );
+    if (alreadyEnrolled) {
+      return { ok: false as const, code: "CONFLICT" as const, message: "Student is already registered in this course offering." };
+    }
+    const activeCount = memoryDb.enrollments.filter(
+      e => e.courseOfferingId === courseOfferingId && (e.status === "registered" || e.status === "completed"),
+    ).length;
+    if (activeCount >= offering.capacity) {
+      return { ok: false as const, code: "CONFLICT" as const, message: `Registration blocked: section ${offering.section} has reached its capacity of ${offering.capacity} seats.` };
+    }
+    const requiredPrereqIds = memoryDb.coursePrerequisites
+      .filter(cp => cp.courseId === offering.courseId)
+      .map(cp => cp.prerequisiteCourseId);
+    if (requiredPrereqIds.length > 0) {
+      const completedCourseIds = new Set(
+        memoryDb.enrollments
+          .filter(e => {
+            if (e.studentId !== studentId) return false;
+            if (e.status === "completed") return true;
+            const grade = memoryDb.gradeRecords.find(g => g.enrollmentId === e.id && g.status === "published");
+            return Boolean(grade && grade.letterGrade !== "F");
+          })
+          .map(e => memoryDb.offerings.find(o => o.id === e.courseOfferingId)?.courseId)
+          .filter((id): id is number => id !== undefined),
+      );
+      const missingCourses = requiredPrereqIds
+        .filter(reqId => !completedCourseIds.has(reqId))
+        .map(reqId => memoryDb.courses.find(c => c.id === reqId)?.code ?? `Course #${reqId}`);
+      if (missingCourses.length > 0) {
+        return {
+          ok: false as const,
+          code: "BAD_REQUEST" as const,
+          message: `Registration blocked: unmet prerequisite course(s): ${missingCourses.join(", ")}.`,
+        };
+      }
+    }
+    return { ok: true as const };
+  }
+
+  const [offering] = await db
+    .select({
+      id: courseOfferings.id,
+      courseId: courseOfferings.courseId,
+      section: courseOfferings.section,
+      capacity: courseOfferings.capacity,
+      status: courseOfferings.status,
+    })
+    .from(courseOfferings)
+    .where(eq(courseOfferings.id, courseOfferingId))
+    .limit(1);
+
+  if (!offering) {
+    return { ok: false as const, code: "NOT_FOUND" as const, message: "Course offering was not found." };
+  }
+  if (offering.status !== "open") {
+    return { ok: false as const, code: "BAD_REQUEST" as const, message: `Course offering section ${offering.section} is currently ${offering.status} and not open for registration.` };
+  }
+
+  const existingOfferings = await db
+    .select({ id: enrollments.id, studentId: enrollments.studentId, status: enrollments.status })
+    .from(enrollments)
+    .where(eq(enrollments.courseOfferingId, courseOfferingId));
+
+  if (existingOfferings.some(e => e.studentId === studentId && (e.status === "registered" || e.status === "completed"))) {
+    return { ok: false as const, code: "CONFLICT" as const, message: "Student is already registered in this course offering." };
+  }
+
+  const activeCount = existingOfferings.filter(e => e.status === "registered" || e.status === "completed").length;
+  if (activeCount >= offering.capacity) {
+    return { ok: false as const, code: "CONFLICT" as const, message: `Registration blocked: section ${offering.section} has reached its capacity of ${offering.capacity} seats.` };
+  }
+
+  const prereqs = await db
+    .select({
+      prerequisiteCourseId: coursePrerequisites.prerequisiteCourseId,
+      code: courses.code,
+    })
+    .from(coursePrerequisites)
+    .innerJoin(courses, eq(coursePrerequisites.prerequisiteCourseId, courses.id))
+    .where(eq(coursePrerequisites.courseId, offering.courseId));
+
+  if (prereqs.length > 0) {
+    const studentEnrollments = await db
+      .select({
+        courseId: courseOfferings.courseId,
+        enrollmentStatus: enrollments.status,
+        gradeStatus: gradeRecords.status,
+        letterGrade: gradeRecords.letterGrade,
+      })
+      .from(enrollments)
+      .innerJoin(courseOfferings, eq(enrollments.courseOfferingId, courseOfferings.id))
+      .leftJoin(gradeRecords, eq(gradeRecords.enrollmentId, enrollments.id))
+      .where(eq(enrollments.studentId, studentId));
+
+    const completedCourseIds = new Set(
+      studentEnrollments
+        .filter(row => row.enrollmentStatus === "completed" || (row.gradeStatus === "published" && row.letterGrade !== "F"))
+        .map(row => row.courseId),
+    );
+
+    const missingCourses = prereqs
+      .filter(p => !completedCourseIds.has(p.prerequisiteCourseId))
+      .map(p => p.code);
+
+    if (missingCourses.length > 0) {
+      return {
+        ok: false as const,
+        code: "BAD_REQUEST" as const,
+        message: `Registration blocked: unmet prerequisite course(s): ${missingCourses.join(", ")}.`,
+      };
+    }
+  }
+
+  return { ok: true as const };
+}
+
 export async function findTimetableClashes(studentId: number, courseOfferingId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) {
+    const targetOffering = memoryDb.offerings.find(o => o.id === courseOfferingId);
+    if (!targetOffering) return [];
+    const targetMeetings = memoryDb.classMeetings
+      .filter(m => m.courseOfferingId === courseOfferingId)
+      .map(m => ({
+        termId: targetOffering.termId,
+        weekday: m.weekday,
+        startsAt: m.startsAt,
+        endsAt: m.endsAt,
+      }));
+    if (!targetMeetings.length) return [];
+    const registeredOfferingIds = memoryDb.enrollments
+      .filter(e => e.studentId === studentId && e.status === "registered")
+      .map(e => e.courseOfferingId);
+    const enrolledMeetings = memoryDb.classMeetings
+      .filter(m => registeredOfferingIds.includes(m.courseOfferingId))
+      .map(m => {
+        const offering = memoryDb.offerings.find(o => o.id === m.courseOfferingId)!;
+        const course = memoryDb.courses.find(c => c.id === offering.courseId)!;
+        return {
+          courseCode: course.code,
+          courseTitle: course.title,
+          section: offering.section,
+          weekday: m.weekday,
+          startsAt: m.startsAt,
+          endsAt: m.endsAt,
+          termId: offering.termId,
+        };
+      });
+    return enrolledMeetings.filter(existing =>
+      targetMeetings.some(
+        candidate =>
+          candidate.termId === existing.termId &&
+          candidate.weekday === existing.weekday &&
+          timeRangesOverlap(candidate.startsAt, candidate.endsAt, existing.startsAt, existing.endsAt),
+      ),
+    );
+  }
   const target = await db
     .select({ termId: courseOfferings.termId, weekday: classMeetings.weekday, startsAt: classMeetings.startsAt, endsAt: classMeetings.endsAt })
     .from(courseOfferings)
@@ -1376,6 +1615,7 @@ export async function listScholarships() {
       const term = memoryDb.terms.find(t => t.id === sc.termId);
       return {
         id: sc.id,
+        studentId: sc.studentId,
         name: sc.name,
         amountCents: sc.amountCents,
         status: sc.status,
@@ -1389,6 +1629,7 @@ export async function listScholarships() {
   return db
     .select({
       id: scholarships.id,
+      studentId: scholarships.studentId,
       name: scholarships.name,
       amountCents: scholarships.amountCents,
       status: scholarships.status,
@@ -1427,6 +1668,65 @@ export async function createScholarship(input: {
   }
   const result = await db.insert(scholarships).values({ ...input, status: "approved" });
   return Number(result[0].insertId);
+}
+
+export async function applyScholarshipToInvoice(input: { scholarshipId: number; invoiceId: number }) {
+  const db = await getDb();
+  if (!db) {
+    const scholarship = memoryDb.scholarships.find(s => s.id === input.scholarshipId);
+    if (!scholarship) throw new Error("Scholarship award was not found.");
+    if (scholarship.status !== "approved") throw new Error("Only approved scholarships can be applied to an invoice.");
+    const invoice = memoryDb.invoices.find(i => i.id === input.invoiceId);
+    if (!invoice || invoice.studentId !== scholarship.studentId) {
+      throw new Error("Target invoice was not found for this scholarship recipient.");
+    }
+    if (!["issued", "part_paid", "overdue"].includes(invoice.status) || invoice.balanceCents <= 0) {
+      throw new Error("Target invoice does not have an open balance.");
+    }
+    const appliedAmountCents = Math.min(invoice.balanceCents, scholarship.amountCents);
+    const newBalanceCents = invoice.balanceCents - appliedAmountCents;
+    invoice.balanceCents = newBalanceCents;
+    invoice.status = newBalanceCents === 0 ? "paid" : "part_paid";
+    invoice.updatedAt = new Date();
+    scholarship.status = "applied";
+    return { appliedAmountCents, newBalanceCents, invoiceNumber: invoice.invoiceNumber, scholarshipName: scholarship.name };
+  }
+
+  return db.transaction(async tx => {
+    const [scholarship] = await tx
+      .select()
+      .from(scholarships)
+      .where(eq(scholarships.id, input.scholarshipId))
+      .limit(1);
+    if (!scholarship) throw new Error("Scholarship award was not found.");
+    if (scholarship.status !== "approved") throw new Error("Only approved scholarships can be applied to an invoice.");
+
+    const [invoice] = await tx
+      .select()
+      .from(invoices)
+      .where(eq(invoices.id, input.invoiceId))
+      .limit(1);
+    if (!invoice || invoice.studentId !== scholarship.studentId) {
+      throw new Error("Target invoice was not found for this scholarship recipient.");
+    }
+    if (!["issued", "part_paid", "overdue"].includes(invoice.status) || invoice.balanceCents <= 0) {
+      throw new Error("Target invoice does not have an open balance.");
+    }
+
+    const appliedAmountCents = Math.min(invoice.balanceCents, scholarship.amountCents);
+    const newBalanceCents = invoice.balanceCents - appliedAmountCents;
+
+    await tx
+      .update(invoices)
+      .set({ balanceCents: newBalanceCents, status: newBalanceCents === 0 ? "paid" : "part_paid" })
+      .where(eq(invoices.id, invoice.id));
+    await tx
+      .update(scholarships)
+      .set({ status: "applied" })
+      .where(eq(scholarships.id, scholarship.id));
+
+    return { appliedAmountCents, newBalanceCents, invoiceNumber: invoice.invoiceNumber, scholarshipName: scholarship.name };
+  });
 }
 
 export async function waiveInvoice(invoiceId: number) {
@@ -1732,20 +2032,43 @@ export async function listDocumentsForRequest(requestId: number) {
 
 export async function listAuditEvents() {
   const db = await getDb();
-  if (!db) return memoryDb.auditEvents;
+  if (!db) {
+    return memoryDb.auditEvents.map(e => {
+      const actor = e.actorUserId ? memoryDb.users.find(u => u.id === e.actorUserId) : undefined;
+      return {
+        id: e.id,
+        actorUserId: e.actorUserId,
+        actorName: actor?.name ?? null,
+        actorEmail: actor?.email ?? null,
+        actorRole: actor?.role ?? null,
+        action: e.action,
+        entityType: e.entityType,
+        entityId: e.entityId,
+        summary: e.summary,
+        metadata: (e.metadata as Record<string, unknown> | null) ?? null,
+        occurredAt: e.occurredAt,
+      };
+    });
+  }
 
   return db
     .select({
       id: auditEvents.id,
+      actorUserId: auditEvents.actorUserId,
+      actorName: users.name,
+      actorEmail: users.email,
+      actorRole: users.role,
       action: auditEvents.action,
       entityType: auditEvents.entityType,
       entityId: auditEvents.entityId,
       summary: auditEvents.summary,
+      metadata: auditEvents.metadata,
       occurredAt: auditEvents.occurredAt,
     })
     .from(auditEvents)
+    .leftJoin(users, eq(auditEvents.actorUserId, users.id))
     .orderBy(desc(auditEvents.occurredAt))
-    .limit(100);
+    .limit(150);
 }
 
 export async function listInstitutionalUsers() {

@@ -93,6 +93,17 @@ function FinanceHubContent() {
     },
     onError: error => toast.error(error.message),
   });
+  const applyScholarship = trpc.finance.applyScholarship.useMutation({
+    onSuccess: async result => {
+      toast.success(`Applied ${formatMoney(result.appliedAmountCents)} from ${result.scholarshipName} to ${result.invoiceNumber}.`);
+      await Promise.all([
+        utils.finance.scholarships.invalidate(),
+        utils.finance.invoices.invalidate(),
+        utils.dashboard.overview.invalidate(),
+      ]);
+    },
+    onError: error => toast.error(error.message),
+  });
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -146,7 +157,7 @@ function FinanceHubContent() {
         <ContentCard>
           <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#98764a]">P1 finance foundations</p>
           <h2 className="mt-2 font-serif text-2xl tracking-[-0.03em] text-[#203950]">Traceable financial records</h2>
-          <p className="mt-3 text-sm leading-6 text-[#72747f]">The data model supports invoices, balances, scholarship awards, and waivers with audited issuance. A payment gateway, bank reconciliation process, currency policy, and financial-aid regulations must be configured before collecting payments.</p>
+          <p className="mt-3 text-sm leading-6 text-[#72747f]">The data model supports invoices, balances, scholarship awards, and waivers with audited issuance. Approved scholarships can be applied directly against open student invoices.</p>
         </ContentCard>
       </section>
 
@@ -158,7 +169,7 @@ function FinanceHubContent() {
         {financeStaff ? <InstitutionalInvoiceTable invoices={institutionalInvoices.data || []} onWaive={invoiceId => waive.mutate({ invoiceId })} waiverPending={waive.isPending} /> : <PersonalInvoiceTable invoices={personalInvoices.data || []} />}
       </ContentCard>
       {financeStaff ? <><section className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Settled simulations" value={formatMoney(reporting.data?.settledCents || 0)} /><Metric label="Awaiting reconciliation" value={String(reporting.data?.pendingCount || 0)} /><Metric label="Reconciled" value={String(reporting.data?.reconciledCount || 0)} /><Metric label="Exceptions" value={String(reporting.data?.exceptionCount || 0)} /></section><ContentCard className="mt-6"><div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#98764a]">Reconciliation controls</p><h2 className="mt-1 font-serif text-2xl tracking-[-0.03em] text-[#203950]">Filter, sort, and export</h2></div><div className="flex flex-wrap gap-2"><div className="w-44"><p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#837b6e]"><Filter className="h-3 w-3" />Status</p><Select value={ledgerFilter} onValueChange={setLedgerFilter}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All payments</SelectItem><SelectItem value="pending">Pending review</SelectItem><SelectItem value="reconciled">Reconciled</SelectItem><SelectItem value="exception">Exceptions</SelectItem></SelectContent></Select></div><div className="w-44"><p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#837b6e]"><ArrowDownUp className="h-3 w-3" />Sort</p><Select value={ledgerSort} onValueChange={setLedgerSort}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="latest">Latest settled</SelectItem><SelectItem value="amount_high">Amount: high to low</SelectItem><SelectItem value="amount_low">Amount: low to high</SelectItem></SelectContent></Select></div><Button variant="outline" onClick={exportLedger} disabled={!displayedPayments.length} className="h-10 self-end rounded-xl"><Download className="mr-2 h-4 w-4" />Export CSV</Button></div></div></ContentCard><PaymentRegister payments={displayedPayments} onReconcile={(paymentId, status) => reconcile.mutate({ paymentId, status })} reconciling={reconcile.isPending} /></> : <PaymentRegister payments={personalPayments.data || []} />}
-      {financeStaff ? <ScholarshipRegister scholarships={scholarships.data || []} /> : null}
+      {financeStaff ? <ScholarshipRegister scholarships={scholarships.data || []} invoices={institutionalInvoices.data || []} onApply={(scholarshipId, invoiceId) => applyScholarship.mutate({ scholarshipId, invoiceId })} applying={applyScholarship.isPending} /> : null}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="rounded-2xl sm:max-w-lg">
@@ -189,7 +200,68 @@ function InstitutionalInvoiceTable({ invoices, onWaive, waiverPending }: { invoi
   return <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left"><thead className="bg-[#faf8f3] text-[10px] font-bold uppercase tracking-[0.14em] text-[#837b6e]"><tr><th className="px-5 py-3">Invoice</th><th className="px-5 py-3">Student</th><th className="px-5 py-3">Term</th><th className="px-5 py-3">Balance</th><th className="px-5 py-3">Status</th><th className="px-5 py-3">Control</th></tr></thead><tbody className="divide-y divide-[#eee9e0]">{invoices.map(invoice => <tr key={invoice.id}><td className="px-5 py-4 text-sm font-semibold text-[#344a60]">{invoice.invoiceNumber}</td><td className="px-5 py-4 text-sm text-[#586b7b]">{invoice.legalFirstName} {invoice.legalLastName}<span className="mt-1 block text-xs text-[#858077]">{invoice.studentNumber}</span></td><td className="px-5 py-4 text-sm text-[#586b7b]">{invoice.termName || "—"}</td><td className="px-5 py-4 font-semibold text-[#344a60]">{formatMoney(invoice.balanceCents)}</td><td className="px-5 py-4"><StatusPill tone={invoiceTone(invoice.status)}>{invoice.status.replace("_", " ")}</StatusPill></td><td className="px-5 py-4">{invoice.status !== "waived" && invoice.balanceCents > 0 ? <Button variant="outline" size="sm" disabled={waiverPending} onClick={() => onWaive(invoice.id)} className="h-8 rounded-lg text-[11px]">Waive</Button> : <span className="text-xs text-[#858077]">—</span>}</td></tr>)}</tbody></table></div>;
 }
 
-function ScholarshipRegister({ scholarships }: { scholarships: Array<{ id: number; name: string; amountCents: number; status: string; studentNumber: string; legalFirstName: string; legalLastName: string; termName: string | null }> }) { return <ContentCard className="mt-6 p-0"><div className="flex items-center gap-3 border-b border-[#e6e0d6] p-5"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#eaf1f5] text-[#315875]"><BadgeDollarSign className="h-4 w-4" /></span><div><p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#98764a]">Financial-aid register</p><h2 className="mt-1 font-serif text-2xl tracking-[-0.03em] text-[#203950]">Approved scholarships</h2></div></div>{scholarships.length ? <div className="divide-y divide-[#eee9e0]">{scholarships.map(scholarship => <div className="flex items-center justify-between gap-4 p-5" key={scholarship.id}><div><p className="text-sm font-semibold text-[#344a60]">{scholarship.name}</p><p className="mt-1 text-xs text-[#858077]">{scholarship.legalFirstName} {scholarship.legalLastName} · {scholarship.studentNumber} · {scholarship.termName || "No term"}</p></div><div className="text-right"><p className="text-sm font-semibold text-[#344a60]">{formatMoney(scholarship.amountCents)}</p><div className="mt-1"><StatusPill tone="good">{scholarship.status}</StatusPill></div></div></div>)}</div> : <div className="p-5"><EmptyState icon={<BadgeDollarSign className="h-5 w-5" />} title="No scholarship awards yet" detail="Approved scholarship records will be listed here for authorised finance staff." /></div>}</ContentCard>; }
+function ScholarshipRegister({
+  scholarships,
+  invoices,
+  onApply,
+  applying,
+}: {
+  scholarships: Array<{ id: number; studentId?: number; name: string; amountCents: number; status: string; studentNumber: string; legalFirstName: string; legalLastName: string; termName: string | null }>;
+  invoices: Array<{ id: number; studentId?: number; studentNumber: string; invoiceNumber: string; balanceCents: number; status: string }>;
+  onApply: (scholarshipId: number, invoiceId: number) => void;
+  applying: boolean;
+}) {
+  return (
+    <ContentCard className="mt-6 p-0">
+      <div className="flex items-center gap-3 border-b border-[#e6e0d6] p-5">
+        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#eaf1f5] text-[#315875]"><BadgeDollarSign className="h-4 w-4" /></span>
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#98764a]">Financial-aid register</p>
+          <h2 className="mt-1 font-serif text-2xl tracking-[-0.03em] text-[#203950]">Approved scholarships</h2>
+        </div>
+      </div>
+      {scholarships.length ? (
+        <div className="divide-y divide-[#eee9e0]">
+          {scholarships.map(scholarship => {
+            const eligibleInvoices = invoices.filter(
+              inv =>
+                (inv.studentId === scholarship.studentId || inv.studentNumber === scholarship.studentNumber) &&
+                inv.balanceCents > 0 &&
+                ["issued", "part_paid", "overdue"].includes(inv.status),
+            );
+            return (
+              <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between" key={scholarship.id}>
+                <div>
+                  <p className="text-sm font-semibold text-[#344a60]">{scholarship.name}</p>
+                  <p className="mt-1 text-xs text-[#858077]">{scholarship.legalFirstName} {scholarship.legalLastName} · {scholarship.studentNumber} · {scholarship.termName || "No term"}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  {scholarship.status === "approved" && eligibleInvoices.length > 0 ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={applying}
+                      onClick={() => onApply(scholarship.id, eligibleInvoices[0].id)}
+                      className="h-8 rounded-lg text-[11px]"
+                    >
+                      Apply to {eligibleInvoices[0].invoiceNumber}
+                    </Button>
+                  ) : null}
+                  <div className="text-right">
+                    <p className="text-sm font-semibold text-[#344a60]">{formatMoney(scholarship.amountCents)}</p>
+                    <div className="mt-1"><StatusPill tone={scholarship.status === "applied" ? "navy" : "good"}>{scholarship.status}</StatusPill></div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="p-5"><EmptyState icon={<BadgeDollarSign className="h-5 w-5" />} title="No scholarship awards yet" detail="Approved scholarship records will be listed here for authorised finance staff." /></div>
+      )}
+    </ContentCard>
+  );
+}
 
 function PersonalInvoiceTable({ invoices }: { invoices: Array<{ id: number; invoiceNumber: string; termName: string | null; balanceCents: number; status: string }> }) {
   if (!invoices.length) return <div className="p-5"><EmptyState icon={<FileWarning className="h-5 w-5" />} title="No invoices to display" detail="No visible invoices are linked to your student account." /></div>;

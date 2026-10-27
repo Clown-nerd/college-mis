@@ -49,20 +49,90 @@ export const memoryDb = {
   staffProfiles: [] as Array<typeof staffProfiles.$inferSelect>,
   studentRequests: [] as Array<typeof import("../drizzle/schema").studentRequests.$inferSelect>,
   documents: [] as Array<typeof import("../drizzle/schema").documents.$inferSelect>,
-  auditEvents: [] as Array<typeof import("../drizzle/schema").auditEvents.$inferSelect>,
+  auditEvents: [
+    {
+      id: 5,
+      actorUserId: null,
+      action: "student.updated",
+      entityType: "student",
+      entityId: "1",
+      summary: "Updated student record LOCAL-STUDENT-001 (status: active, programme: BSC-CS).",
+      metadata: { studentNumber: "LOCAL-STUDENT-001", status: "active", programmeCode: "BSC-CS", updatedFields: ["status", "programmeId"] },
+      occurredAt: new Date(Date.now() - 1000 * 60 * 12),
+    },
+    {
+      id: 4,
+      actorUserId: null,
+      action: "applicant.admitted",
+      entityType: "applicant",
+      entityId: "101",
+      summary: "Recorded admitted decision for applicant APP-2026-014 (BSc Computer Science).",
+      metadata: { applicantNumber: "APP-2026-014", decision: "admitted", programmeCode: "BSC-CS" },
+      occurredAt: new Date(Date.now() - 1000 * 60 * 38),
+    },
+    {
+      id: 3,
+      actorUserId: null,
+      action: "application.details_verified",
+      entityType: "applicant",
+      entityId: "101",
+      summary: "Verified submitted application details and fee settlement for applicant APP-2026-014.",
+      metadata: { applicantNumber: "APP-2026-014", feeSettled: true },
+      occurredAt: new Date(Date.now() - 1000 * 60 * 65),
+    },
+    {
+      id: 2,
+      actorUserId: null,
+      action: "courseOffering.created",
+      entityType: "courseOffering",
+      entityId: "1",
+      summary: "Created section A for course CS101 (Autumn Term 2026, capacity 45).",
+      metadata: { courseCode: "CS101", section: "A", capacity: 45, modality: "in_person" },
+      occurredAt: new Date(Date.now() - 1000 * 60 * 140),
+    },
+    {
+      id: 1,
+      actorUserId: null,
+      action: "role.updated",
+      entityType: "user",
+      entityId: "1",
+      summary: "Verified institutional administrator governance permissions.",
+      metadata: { role: "admin", scope: "institution-wide" },
+      occurredAt: new Date(Date.now() - 1000 * 60 * 240),
+    },
+  ] as Array<typeof import("../drizzle/schema").auditEvents.$inferSelect>,
 };
 
-// Lazily create the drizzle instance so local tooling can run without a DB.
+let _dbChecked = false;
+let _dbChecking: Promise<ReturnType<typeof drizzle> | null> | null = null;
+
+// Lazily create and verify the drizzle instance so local/preview tooling falls back cleanly when MySQL is unreachable.
 export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      _db = drizzle(process.env.DATABASE_URL);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
+  if (_dbChecked) {
+    return _db;
   }
-  return _db;
+  if (!process.env.DATABASE_URL) {
+    _dbChecked = true;
+    _db = null;
+    return null;
+  }
+  if (_dbChecking) {
+    return _dbChecking;
+  }
+  _dbChecking = (async () => {
+    try {
+      const candidate = drizzle(process.env.DATABASE_URL!);
+      await candidate.select({ id: users.id }).from(users).limit(1);
+      _db = candidate;
+    } catch {
+      _db = null;
+    } finally {
+      _dbChecked = true;
+      _dbChecking = null;
+    }
+    return _db;
+  })();
+  return _dbChecking;
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {

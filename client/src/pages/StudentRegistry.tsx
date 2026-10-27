@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc";
-import { CirclePlus, ContactRound, Search, UserRoundPlus, UsersRound } from "lucide-react";
+import { CirclePlus, ContactRound, Download, PencilLine, Search, UserRoundPlus, UsersRound } from "lucide-react";
 import { FormEvent, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -30,6 +30,17 @@ function StudentRegistryContent() {
   const [isOpen, setIsOpen] = useState(false);
   const [registrationOpen, setRegistrationOpen] = useState(false);
   const [registration, setRegistration] = useState({ studentId: "", courseOfferingId: "" });
+  const [editingStudent, setEditingStudent] = useState<{
+    id: number;
+    studentNumber: string;
+    legalFirstName: string;
+    legalLastName: string;
+    preferredName: string;
+    institutionalEmail: string;
+    phone: string;
+    programmeId: string;
+    status: "applicant" | "active" | "leave" | "graduated" | "withdrawn";
+  } | null>(null);
   const [search, setSearch] = useState("");
   const [form, setForm] = useState({
     studentNumber: "",
@@ -49,6 +60,17 @@ function StudentRegistryContent() {
       setForm({ studentNumber: "", legalFirstName: "", legalLastName: "", institutionalEmail: "", phone: "", emergencyContactName: "", emergencyContactPhone: "", programmeId: "unassigned", status: "active" });
       await utils.students.list.invalidate();
       await utils.dashboard.overview.invalidate();
+      await utils.governance.auditLog.invalidate();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const updateStudent = trpc.students.update.useMutation({
+    onSuccess: async () => {
+      toast.success("Student record updated and logged in the activity trail.");
+      setEditingStudent(null);
+      await utils.students.list.invalidate();
+      await utils.dashboard.overview.invalidate();
+      await utils.governance.auditLog.invalidate();
     },
     onError: error => toast.error(error.message),
   });
@@ -58,6 +80,7 @@ function StudentRegistryContent() {
       setRegistrationOpen(false);
       setRegistration({ studentId: "", courseOfferingId: "" });
       await utils.dashboard.overview.invalidate();
+      await utils.governance.auditLog.invalidate();
     },
     onError: error => toast.error(error.message),
   });
@@ -71,6 +94,32 @@ function StudentRegistryContent() {
         .some(value => value?.toLowerCase().includes(normalized)),
     );
   }, [studentsQuery.data, search]);
+
+  const exportRegistryCsv = () => {
+    const rows = [
+      ["Student Number", "First Name", "Last Name", "Email", "Programme", "Department", "Status", "Last Updated"],
+      ...filteredStudents.map(s => [
+        s.studentNumber,
+        s.legalFirstName,
+        s.legalLastName,
+        s.institutionalEmail || "",
+        s.programmeName || "Unassigned",
+        s.departmentName || "",
+        s.status,
+        new Date(s.updatedAt).toISOString(),
+      ]),
+    ];
+    const csv = rows.map(r => r.map(v => `"${String(v).replaceAll('"', '""')}"`).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "college-mis-student-registry.csv";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    toast.success("Filtered student registry exported as CSV.");
+  };
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -87,11 +136,25 @@ function StudentRegistryContent() {
     });
   };
 
+  const submitEdit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editingStudent) return;
+    updateStudent.mutate({
+      studentId: editingStudent.id,
+      status: editingStudent.status,
+      programmeId: editingStudent.programmeId === "unassigned" ? null : Number(editingStudent.programmeId),
+      preferredName: editingStudent.preferredName || undefined,
+      institutionalEmail: editingStudent.institutionalEmail || undefined,
+      phone: editingStudent.phone || undefined,
+    });
+  };
+
   if (!allowed) return <AccessDenied title="Student registry access is restricted" detail="Your institutional role cannot browse or amend other students’ records." />;
 
   return (
     <>
       <PageHeading eyebrow="Student lifecycle" title="Student registry" description="Maintain authoritative learner profiles, programme placement, enrollment status, and contact details in one controlled record.">
+        <Button onClick={exportRegistryCsv} disabled={!filteredStudents.length} variant="outline" className="h-10 rounded-xl px-4 text-sm font-semibold"><Download className="mr-2 h-4 w-4" />Export CSV</Button>
         <Button onClick={() => setRegistrationOpen(true)} variant="outline" className="h-10 rounded-xl px-4 text-sm font-semibold"><CirclePlus className="mr-2 h-4 w-4" />Register course</Button>
         <Button onClick={() => setIsOpen(true)} className="h-10 rounded-xl bg-[#132b45] px-4 text-sm font-semibold hover:bg-[#1c3b5c]"><UserRoundPlus className="mr-2 h-4 w-4" />New student</Button>
       </PageHeading>
@@ -103,7 +166,63 @@ function StudentRegistryContent() {
         </div>
         {studentsQuery.isLoading ? <div className="space-y-3 p-5">{[1, 2, 3].map(item => <Skeleton className="h-14 rounded-xl bg-[#e9e4da]" key={item} />)}</div> : null}
         {!studentsQuery.isLoading && filteredStudents.length === 0 ? <div className="p-5"><EmptyState icon={<UsersRound className="h-5 w-5" />} title={search ? "No matching student records" : "No student records yet"} detail={search ? "Try a different identifier or name." : "Create the first authoritative student profile after configuring programmes and terms."} action={!search ? <Button onClick={() => setIsOpen(true)} variant="outline" className="rounded-xl"><CirclePlus className="mr-2 h-4 w-4" />Create student</Button> : undefined} /></div> : null}
-        {filteredStudents.length > 0 ? <div className="overflow-x-auto"><table className="w-full min-w-[780px] text-left"><thead className="bg-[#faf8f3] text-[10px] font-bold uppercase tracking-[0.14em] text-[#837b6e]"><tr><th className="px-5 py-3">Student</th><th className="px-5 py-3">Programme</th><th className="px-5 py-3">Department</th><th className="px-5 py-3">Status</th><th className="px-5 py-3">Last updated</th></tr></thead><tbody className="divide-y divide-[#eee9e0]">{filteredStudents.map(student => <tr className="transition-colors hover:bg-[#fffcf6]" key={student.id}><td className="px-5 py-4"><p className="font-medium text-[#283f55]">{student.preferredName || `${student.legalFirstName} ${student.legalLastName}`}</p><p className="mt-1 text-xs text-[#7c8087]">{student.studentNumber} · {student.institutionalEmail || "No institutional email"}</p></td><td className="px-5 py-4 text-sm text-[#536575]">{student.programmeName || "Unassigned"}<span className="mt-1 block text-xs text-[#96968f]">{student.programmeCode || "—"}</span></td><td className="px-5 py-4 text-sm text-[#536575]">{student.departmentName || "—"}</td><td className="px-5 py-4"><StatusPill tone={statusTone(student.status)}>{student.status}</StatusPill></td><td className="px-5 py-4 text-xs text-[#7c8087]">{new Date(student.updatedAt).toLocaleDateString()}</td></tr>)}</tbody></table></div> : null}
+        {filteredStudents.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[840px] text-left">
+              <thead className="bg-[#faf8f3] text-[10px] font-bold uppercase tracking-[0.14em] text-[#837b6e]">
+                <tr>
+                  <th className="px-5 py-3">Student</th>
+                  <th className="px-5 py-3">Programme</th>
+                  <th className="px-5 py-3">Department</th>
+                  <th className="px-5 py-3">Status</th>
+                  <th className="px-5 py-3">Last updated</th>
+                  <th className="px-5 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#eee9e0]">
+                {filteredStudents.map(student => (
+                  <tr className="transition-colors hover:bg-[#fffcf6]" key={student.id}>
+                    <td className="px-5 py-4">
+                      <p className="font-medium text-[#283f55]">{student.preferredName || `${student.legalFirstName} ${student.legalLastName}`}</p>
+                      <p className="mt-1 text-xs text-[#7c8087]">{student.studentNumber} · {student.institutionalEmail || "No institutional email"}</p>
+                    </td>
+                    <td className="px-5 py-4 text-sm text-[#536575]">
+                      {student.programmeName || "Unassigned"}
+                      <span className="mt-1 block text-xs text-[#96968f]">{student.programmeCode || "—"}</span>
+                    </td>
+                    <td className="px-5 py-4 text-sm text-[#536575]">{student.departmentName || "—"}</td>
+                    <td className="px-5 py-4"><StatusPill tone={statusTone(student.status)}>{student.status}</StatusPill></td>
+                    <td className="px-5 py-4 text-xs text-[#7c8087]">{new Date(student.updatedAt).toLocaleDateString()}</td>
+                    <td className="px-5 py-4 text-right">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 rounded-lg text-xs"
+                        onClick={() =>
+                          setEditingStudent({
+                            id: student.id,
+                            studentNumber: student.studentNumber,
+                            legalFirstName: student.legalFirstName,
+                            legalLastName: student.legalLastName,
+                            preferredName: student.preferredName || "",
+                            institutionalEmail: student.institutionalEmail || "",
+                            phone: student.phone || "",
+                            programmeId: student.programmeId ? String(student.programmeId) : "unassigned",
+                            status: student.status,
+                          })
+                        }
+                      >
+                        <PencilLine className="mr-1.5 h-3.5 w-3.5" />
+                        Update record
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
       </ContentCard>
 
       <Dialog open={isOpen} onOpenChange={setIsOpen}>
@@ -125,13 +244,69 @@ function StudentRegistryContent() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={Boolean(editingStudent)} onOpenChange={open => { if (!open) setEditingStudent(null); }}>
+        <DialogContent className="rounded-2xl sm:max-w-lg">
+          {editingStudent ? (
+            <form onSubmit={submitEdit}>
+              <DialogHeader>
+                <DialogTitle className="font-serif text-2xl tracking-[-0.03em]">Update student record</DialogTitle>
+                <DialogDescription>
+                  Amend enrollment status, programme placement, or contact details for {editingStudent.legalFirstName} {editingStudent.legalLastName} ({editingStudent.studentNumber}). Every update is logged in the system activity trail.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="mt-6 grid gap-4 sm:grid-cols-2">
+                <Field label="Enrollment status" required>
+                  <Select value={editingStudent.status} onValueChange={(value: typeof editingStudent.status) => setEditingStudent(curr => curr ? { ...curr, status: value } : null)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {["active", "applicant", "leave", "graduated", "withdrawn"].map(status => (
+                        <SelectItem value={status} key={status}>{status}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Preferred name">
+                  <Input value={editingStudent.preferredName} onChange={event => setEditingStudent(curr => curr ? { ...curr, preferredName: event.target.value } : null)} placeholder="Optional preferred name" />
+                </Field>
+                <Field label="Institutional email">
+                  <Input type="email" value={editingStudent.institutionalEmail} onChange={event => setEditingStudent(curr => curr ? { ...curr, institutionalEmail: event.target.value } : null)} />
+                </Field>
+                <Field label="Telephone">
+                  <Input value={editingStudent.phone} onChange={event => setEditingStudent(curr => curr ? { ...curr, phone: event.target.value } : null)} />
+                </Field>
+                <div className="sm:col-span-2">
+                  <Field label="Programme placement">
+                    <Select value={editingStudent.programmeId} onValueChange={programmeId => setEditingStudent(curr => curr ? { ...curr, programmeId } : null)}>
+                      <SelectTrigger><SelectValue placeholder="Unassigned" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="unassigned">Unassigned</SelectItem>
+                        {(catalogueQuery.data?.programmes || []).map(programme => (
+                          <SelectItem key={programme.id} value={String(programme.id)}>{programme.code} — {programme.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+              </div>
+              <DialogFooter className="mt-7">
+                <Button type="button" variant="outline" className="rounded-xl" onClick={() => setEditingStudent(null)}>Cancel</Button>
+                <Button type="submit" className="rounded-xl bg-[#132b45] hover:bg-[#1c3b5c]" disabled={updateStudent.isPending}>
+                  {updateStudent.isPending ? "Saving…" : "Save changes"}
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={registrationOpen} onOpenChange={setRegistrationOpen}>
         <DialogContent className="rounded-2xl sm:max-w-lg">
           <form onSubmit={event => { event.preventDefault(); registerStudent.mutate({ studentId: Number(registration.studentId), courseOfferingId: Number(registration.courseOfferingId) }); }}>
-            <DialogHeader><DialogTitle className="font-serif text-2xl tracking-[-0.03em]">Create course registration</DialogTitle><DialogDescription>Register a student in an available course offering. Prerequisite and capacity policy checks should be configured to match the institution’s approved academic regulations.</DialogDescription></DialogHeader>
+            <DialogHeader><DialogTitle className="font-serif text-2xl tracking-[-0.03em]">Create course registration</DialogTitle><DialogDescription>Register a student in an available course offering. Prerequisite completion, seat capacity, duplicate registration, and timetable clash checks are enforced automatically.</DialogDescription></DialogHeader>
             <div className="mt-6 grid gap-4">
               <Field label="Student" required><Select value={registration.studentId} onValueChange={studentId => setRegistration(current => ({ ...current, studentId }))}><SelectTrigger><SelectValue placeholder="Select student" /></SelectTrigger><SelectContent>{(studentsQuery.data || []).map(student => <SelectItem key={student.id} value={String(student.id)}>{student.studentNumber} — {student.legalFirstName} {student.legalLastName}</SelectItem>)}</SelectContent></Select></Field>
-              <Field label="Course offering" required><Select value={registration.courseOfferingId} onValueChange={courseOfferingId => setRegistration(current => ({ ...current, courseOfferingId }))}><SelectTrigger><SelectValue placeholder="Select course offering" /></SelectTrigger><SelectContent>{(catalogueQuery.data?.offerings || []).filter(offering => offering.status === "open").map(offering => <SelectItem key={offering.id} value={String(offering.id)}>{offering.courseCode} · {offering.termName} · {offering.section}</SelectItem>)}</SelectContent></Select></Field>
+              <Field label="Course offering" required><Select value={registration.courseOfferingId} onValueChange={courseOfferingId => setRegistration(current => ({ ...current, courseOfferingId }))}><SelectTrigger><SelectValue placeholder="Select course offering" /></SelectTrigger><SelectContent>{(catalogueQuery.data?.offerings || []).filter(offering => offering.status === "open").map(offering => <SelectItem key={offering.id} value={String(offering.id)}>{offering.courseCode} · {offering.termName} · {offering.section} (Cap: {offering.capacity})</SelectItem>)}</SelectContent></Select></Field>
             </div>
             <DialogFooter className="mt-7"><Button type="button" variant="outline" className="rounded-xl" onClick={() => setRegistrationOpen(false)}>Cancel</Button><Button type="submit" disabled={!registration.studentId || !registration.courseOfferingId || registerStudent.isPending} className="rounded-xl bg-[#132b45] hover:bg-[#1c3b5c]">{registerStudent.isPending ? "Registering…" : "Create registration"}</Button></DialogFooter>
           </form>
