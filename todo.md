@@ -1,0 +1,62 @@
+# Project delivery checklist
+
+- [x] Define the role-and-permission model for administrators, registrars, faculty, students, and finance staff, including audit-event coverage.
+- [x] Implement protected role-aware navigation and route guards for distinct institutional workspaces.
+- [x] Model and manage the student record lifecycle: admissions profile, contacts, programme, department, enrollment status, and academic history.
+- [x] Implement academic structure management for departments, programmes, terms, courses, offerings, prerequisites, and course registrations.
+- [x] Implement timetable views, faculty assignments, and roster management for active course offerings.
+- [x] Implement attendance capture, grade entry, GPA calculation, student results, and transcript-ready academic history.
+- [x] Implement prioritized operational dashboards for enrollment, attendance, progression, grades, and at-risk students.
+- [x] Establish finance foundations for invoices, payment status, scholarships, waivers, and finance reporting.
+- [x] Establish admissions-pipeline foundations for applicants, decisions, and conversion to enrolled student profiles.
+- [x] Establish student-service request and document-workflow foundations with approval and retention status.
+- [x] Plan institutional analytics, exports, governance controls, and audit reporting as P2 roadmap modules.
+- [x] Produce an evidence-based prioritized MIS capability matrix and development-practice recommendation from authoritative sources.
+- [x] Apply database migrations and implement typed server procedures for all delivered backend workflows.
+- [x] Create and maintain Vitest coverage for permissions, academic calculations, and core data rules.
+- [x] Validate accessibility, keyboard navigation, reduced-motion behavior, responsiveness, and visual hierarchy.
+- [x] Document the delivered scope, assumptions, and P1/P2 implementation roadmap.
+- [x] Add centralized route guards for every protected workspace, in addition to role-aware navigation and server guards.
+- [x] Extend student onboarding to capture emergency contacts and an admissions-profile foundation.
+- [x] Add visible prerequisite and course-registration workflows for authorised registry staff.
+- [x] Replace free-text timetable-only configuration with a structured timetable view.
+- [x] Add a progression-focused operational dashboard metric and reporting surface.
+- [x] Implement scholarship, waiver, and finance-reporting workflows beyond invoice issuance.
+- [x] Implement applicant intake, admissions decisions, and applicant-to-student conversion workflows.
+- [x] Implement storage-backed document metadata and retention workflows after approved institutional storage policy is available.
+- [x] Run and document the complete Vitest suite after adding MIS rule and role-guard coverage.
+- [x] Define payment simulation safeguards, reconciliation states, and finance-role controls without processing real funds.
+- [x] Add payment transaction records, invoice settlement logic, auditable simulated gateway outcomes, and reconciliation reporting.
+- [x] Add a finance interface for simulated student-fee payment, payment review, and reconciliation status management.
+- [x] Detect timetable conflicts during course registration using structured course-meeting data and enforce the policy at the server boundary.
+- [x] Provide each student with a privacy-scoped schedule view and downloadable iCalendar export.
+- [x] Refine workforce access roles to distinguish students, teaching staff, non-teaching staff, finance staff, registrars, and administrators.
+- [x] Extend automated tests and visual checks for payments, timetable conflict prevention, calendar export, and refined roles.
+- [x] Add a student self-service application journey that creates a submitted applicant record without granting student-system access.
+- [x] Add administrator confirmation controls requiring reviewed application details and a settled or waived fee condition before student activation.
+- [x] Add an administrator-only staff onboarding workflow for teaching, technical/non-teaching, finance, and registry personnel.
+- [x] Add privacy-scoped term-based academic progression reports with per-term credits, grades, GPA, and performance indicators.
+- [x] Add payment-ledger filters, sort controls, CSV export, and reconciliation-ready reporting fields for authorised finance staff.
+- [x] Extend automated and visual validation for the approval-gated lifecycle, staff provisioning, progression reporting, and ledger tools.
+- [x] Persist an administrator application-detail review state and require that verification before student activation.
+- [x] Add focused automated coverage for applicant activation, staff provisioning, term progression aggregation, and payment-ledger filtering/export helpers.
+- [x] Re-run authenticated role-specific visual checks for administrator and student interfaces where practical, while retaining server-boundary permission tests.
+- [x] Verify ledger helper tests execute and add focused pure tests for staff provisioning and progression aggregation policies.
+- [x] Add a clearly marked development-only local authentication mode with safe, non-production role identities.
+- [x] Enable local role switching for applicant, student, teaching, technical, finance, registrar, and administrator workflow validation.
+- [x] Preserve the existing institutional authentication flow and provide a single configuration switch for disabling local authentication before production use.
+- [x] Validate the applicant-to-student, teaching/technical staff, finance, and administrator views under local role identities.
+- [x] Centralize the development-only local-auth enablement control and verify that production mode blocks it at the server boundary.
+- [x] Provide a safe development-only role-switch URL for role-view validation and review applicant, student, teaching/technical, finance, and administrator routes under local sessions.
+- [x] Restrict applicant dashboard data to prospective-student onboarding information rather than institutional administrative metrics.
+- [x] Restrict finance dashboard data and actions to finance operations rather than registry and governance metrics.
+- [x] Restrict non-teaching staff dashboard data and actions to student-service operations rather than registry and governance metrics.
+- [x] Automatically link the development local student identity to an academic student record without affecting production accounts.
+- [x] Add administrator-controlled email invitations for newly provisioned teaching and technical staff, including delivery status and audit coverage.
+- [x] Add interactive role-specific onboarding checklists with locally retained completion state and clear next-workspace actions.
+- [x] Extend automated and visual validation for local profile linking, staff invitation delivery, and role onboarding workflows.
+- [x] Add a clearly labelled simulated invitation-send action with drafted, sent, and failed delivery states for development validation.
+- [x] Add automated coverage for local student record linking and invitation preparation/send state transitions.
+- [x] Create a controlled test staff record through the administrator workflow and visually verify the invitation state update end to end.
+- [x] Add direct server/data-layer tests for local student record linking and persisted invitation draft, sent, and failed state transitions.
+- [x] Add a router-level test confirming the administrator-only simulated invitation delivery procedure is exposed and auditable.
