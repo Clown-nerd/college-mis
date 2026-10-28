@@ -9,17 +9,53 @@ import {
   studentServicesProcedure,
 } from "./authorization";
 import * as misDb from "./db/mis";
+import * as lmsDb from "./db/lms";
 import { COOKIE_NAME } from "./../shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { storageGetSignedUrl, storagePut } from "./storage";
+import { storageGetSignedUrl, storagePut, validateSafeUpload } from "./storage";
 import { getOrCreateLocalUser } from "./db";
 import { createSessionToken } from "./_core/sessions";
 import { localAuthEnabled } from "./localAuth";
+import {
+  gradeItemStatusValues,
+  lateSubmissionPolicyValues,
+  publicationStatusValues,
+  quizQuestionTypeValues,
+  quizReviewPolicyValues,
+} from "../shared/lms";
 
 const id = z.number().int().positive();
 const optionalText = (limit: number) => z.string().trim().max(limit).optional().transform(value => value || undefined);
+const fileUploadSchema = z
+  .object({
+    fileName: z.string().trim().min(1).max(255),
+    mimeType: z.string().trim().min(3).max(120),
+    contentBase64: z.string().min(1).max(18_000_000),
+  })
+  .optional();
+
+async function storeValidatedUpload(
+  prefix: string,
+  upload?: { fileName: string; mimeType: string; contentBase64: string },
+) {
+  if (!upload) return null;
+  const bytes = Buffer.from(upload.contentBase64, "base64");
+  const validated = validateSafeUpload({
+    name: upload.fileName,
+    mimeType: upload.mimeType,
+    byteLength: bytes.byteLength,
+  });
+  const stored = await storagePut(`${prefix}/${Date.now()}-${validated.safeName}`, bytes, upload.mimeType);
+  return {
+    key: stored.key,
+    url: stored.url,
+    fileName: upload.fileName,
+    mimeType: upload.mimeType,
+    sizeBytes: bytes.byteLength,
+  };
+}
 
 async function assertOfferingAccess(user: { id: number; role: (typeof userRoleValues)[number] }, courseOfferingId: number) {
   const allowed = await misDb.canManageOffering(user.id, user.role, courseOfferingId);
@@ -666,6 +702,919 @@ export const appRouter = router({
         await misDb.writeAuditEvent({ actorUserId: ctx.user.id, action: input.outcome === "sent" ? "staff.invitation_simulated_sent" : "staff.invitation_simulated_failed", entityType: "staffProfile", entityId: String(profile.id), summary: `Recorded simulated invitation ${input.outcome} status for ${profile.email}.`, metadata: { staffCategory: profile.staffCategory, accessRole: profile.accessRole } });
         return { success: true };
       }),
+  }),
+
+  lms: router({
+    accessibleOfferings: protectedProcedure.query(({ ctx }) =>
+      lmsDb.listAccessibleOfferingsForUser(ctx.user.id, ctx.user.role),
+    ),
+
+    myDashboard: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role === "student" || ctx.user.role === "user") {
+        return lmsDb.getLearnerLmsDashboard(ctx.user.id);
+      }
+      const offerings = await lmsDb.listAccessibleOfferingsForUser(ctx.user.id, ctx.user.role);
+      return {
+        courses: offerings.map(o => ({
+          offeringId: o.id,
+          enrollmentId: null,
+          courseCode: o.courseCode,
+          courseTitle: o.courseTitle,
+          section: o.section,
+          termName: o.termName,
+          modality: o.modality,
+          completionPercent: 100,
+          completedItems: 0,
+          totalItems: 0,
+          nextResumeItem: null,
+          upcomingCount: 0,
+          overdueCount: 0,
+          upcomingDeadlines: [],
+          overdueItems: [],
+          latestAnnouncement: null,
+          currentOverallPercent: null,
+          currentLetterGrade: null,
+        })),
+        notifications: [],
+        unreadNotificationCount: 0,
+        preferences: {
+          announcements: true,
+          dueDates: true,
+          submissions: true,
+          grades: true,
+          discussions: true,
+          messages: true,
+        },
+      };
+    }),
+
+    courseSpace: protectedProcedure
+      .input(z.object({ courseOfferingId: id }))
+      .query(async ({ ctx, input }) => {
+        const access = await lmsDb.checkCourseSpaceAccess(ctx.user.id, ctx.user.role, input.courseOfferingId);
+        if (!access.allowed) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You do not have enrolment or faculty assignment access to this course space.",
+          });
+        }
+        return lmsDb.getCourseSpaceFull(input.courseOfferingId, {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          enrollmentId: access.enrollmentId,
+        });
+      }),
+
+    updateCourseSpaceSettings: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          overview: z.string().trim().min(5).max(10000),
+          learningOutcomes: z.string().trim().min(5).max(10000),
+          instructorBio: optionalText(5000),
+          officeHours: optionalText(255),
+          gradingPolicy: optionalText(5000),
+          latePenaltyPercentPerDay: z.number().int().min(0).max(100),
+          allowDiscussions: z.boolean(),
+          allowPrivateMessages: z.boolean(),
+          retentionDays: z.number().int().min(30).max(3650),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        await lmsDb.updateCourseSpaceSettings({ ...input, updatedByUserId: ctx.user.id });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.courseSpace.updated",
+          entityType: "courseOffering",
+          entityId: String(input.courseOfferingId),
+          summary: `Updated LMS course space settings and policies for offering ${input.courseOfferingId}.`,
+        });
+        return { success: true };
+      }),
+
+    createModule: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          title: z.string().trim().min(2).max(180),
+          description: optionalText(5000),
+          weekNumber: z.number().int().min(1).max(52).optional(),
+          status: z.enum(publicationStatusValues),
+          publishAt: z.coerce.date().optional(),
+          unlockAt: z.coerce.date().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        const moduleId = await lmsDb.createLmsModule({ ...input, createdByUserId: ctx.user.id });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.module.created",
+          entityType: "lmsModule",
+          entityId: String(moduleId),
+          summary: `Created LMS module "${input.title}" (${input.status}).`,
+        });
+        return { id: moduleId };
+      }),
+
+    reorderModule: academicProcedure
+      .input(z.object({ courseOfferingId: id, moduleId: id, direction: z.enum(["up", "down"]) }))
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        await lmsDb.reorderLmsModule(input);
+        return { success: true };
+      }),
+
+    createModuleItem: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          moduleId: id,
+          itemType: z.enum(["page", "file", "link", "video", "assignment", "quiz", "discussion"]),
+          title: z.string().trim().min(2).max(180),
+          summary: optionalText(2000),
+          bodyHtml: optionalText(25000),
+          externalUrl: optionalText(1024),
+          captionsUrl: optionalText(1024),
+          transcriptText: optionalText(25000),
+          estimatedMinutes: z.number().int().min(1).max(600).optional(),
+          status: z.enum(publicationStatusValues),
+          publishAt: z.coerce.date().optional(),
+          upload: fileUploadSchema,
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        let uploaded = null;
+        try {
+          uploaded = await storeValidatedUpload(`lms-materials/${input.courseOfferingId}`, input.upload);
+        } catch (err) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "File validation failed.",
+          });
+        }
+        const itemId = await lmsDb.createLmsModuleItem({
+          moduleId: input.moduleId,
+          courseOfferingId: input.courseOfferingId,
+          itemType: input.itemType,
+          title: input.title,
+          summary: input.summary,
+          bodyHtml: input.bodyHtml,
+          externalUrl: input.externalUrl,
+          fileKey: uploaded?.key,
+          fileName: uploaded?.fileName,
+          fileMimeType: uploaded?.mimeType,
+          fileSizeBytes: uploaded?.sizeBytes,
+          captionsUrl: input.captionsUrl,
+          transcriptText: input.transcriptText,
+          estimatedMinutes: input.estimatedMinutes,
+          status: input.status,
+          publishAt: input.publishAt,
+          createdByUserId: ctx.user.id,
+        });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.moduleItem.created",
+          entityType: "lmsModuleItem",
+          entityId: String(itemId),
+          summary: `Added ${input.itemType} item "${input.title}" (${input.status}).`,
+        });
+        return { id: itemId };
+      }),
+
+    reorderModuleItem: academicProcedure
+      .input(z.object({ courseOfferingId: id, moduleId: id, itemId: id, direction: z.enum(["up", "down"]) }))
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        await lmsDb.reorderLmsModuleItem(input);
+        return { success: true };
+      }),
+
+    updateContentPublication: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          targetType: z.enum(["module", "item"]),
+          targetId: id,
+          status: z.enum(publicationStatusValues),
+          publishAt: z.coerce.date().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        await lmsDb.updateLmsContentPublication(input);
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: `lms.${input.targetType}.publication_updated`,
+          entityType: input.targetType === "module" ? "lmsModule" : "lmsModuleItem",
+          entityId: String(input.targetId),
+          summary: `Changed ${input.targetType} #${input.targetId} state to ${input.status}.`,
+        });
+        return { success: true };
+      }),
+
+    toggleItemCompletion: protectedProcedure
+      .input(z.object({ courseOfferingId: id, moduleItemId: id, completed: z.boolean() }))
+      .mutation(async ({ ctx, input }) => {
+        const access = await lmsDb.checkCourseSpaceAccess(ctx.user.id, ctx.user.role, input.courseOfferingId);
+        if (!access.allowed || !access.enrollmentId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Only enrolled learners can record item completion." });
+        }
+        await lmsDb.toggleItemCompletion({
+          moduleItemId: input.moduleItemId,
+          enrollmentId: access.enrollmentId,
+          completed: input.completed,
+        });
+        return { success: true };
+      }),
+
+    createAssignment: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          moduleId: id.optional(),
+          categoryId: id.optional(),
+          title: z.string().trim().min(2).max(180),
+          description: optionalText(15000),
+          dueAt: z.coerce.date().optional(),
+          availableFrom: z.coerce.date().optional(),
+          lockAt: z.coerce.date().optional(),
+          maxScore: z.number().int().min(1).max(1000),
+          latePolicy: z.enum(lateSubmissionPolicyValues),
+          latePenaltyPercentPerDay: z.number().int().min(0).max(100),
+          maxAttempts: z.number().int().min(1).max(20),
+          allowResubmission: z.boolean(),
+          submissionMode: z.enum(["individual", "group"]),
+          allowTextResponse: z.boolean(),
+          allowFileUpload: z.boolean(),
+          rubric: z
+            .array(
+              z.object({
+                criterion: z.string().trim().min(1).max(180),
+                maxPoints: z.number().int().min(1).max(500),
+                description: optionalText(500),
+              }),
+            )
+            .optional(),
+          status: z.enum(publicationStatusValues),
+          publishAt: z.coerce.date().optional(),
+          upload: fileUploadSchema,
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        let uploaded = null;
+        try {
+          uploaded = await storeValidatedUpload(`lms-assignments/${input.courseOfferingId}`, input.upload);
+        } catch (err) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "Attachment validation failed.",
+          });
+        }
+        const activityId = await lmsDb.createConfiguredAssignment({
+          ...input,
+          attachmentKey: uploaded?.key,
+          attachmentName: uploaded?.fileName,
+          attachmentMimeType: uploaded?.mimeType,
+          createdByUserId: ctx.user.id,
+        });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.assignment.created",
+          entityType: "courseActivity",
+          entityId: String(activityId),
+          summary: `Created configured LMS assignment "${input.title}" (maxScore: ${input.maxScore}, policy: ${input.latePolicy}).`,
+        });
+        return { id: activityId };
+      }),
+
+    grantAssignmentExtension: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          activityId: id,
+          enrollmentId: id,
+          extendedDueAt: z.coerce.date(),
+          reason: z.string().trim().min(3).max(500),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        const extId = await lmsDb.grantAssignmentExtension({
+          activityId: input.activityId,
+          enrollmentId: input.enrollmentId,
+          extendedDueAt: input.extendedDueAt,
+          reason: input.reason,
+          grantedByUserId: ctx.user.id,
+        });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.assignment.extension_granted",
+          entityType: "lmsAssignmentExtension",
+          entityId: String(extId),
+          summary: `Granted deadline extension for assignment #${input.activityId} (enrollment #${input.enrollmentId}) until ${input.extendedDueAt.toISOString()}.`,
+          metadata: { reason: input.reason, extendedDueAt: input.extendedDueAt.toISOString() },
+        });
+        return { id: extId };
+      }),
+
+    submitAssignment: protectedProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          activityId: id,
+          isDraft: z.boolean().default(false),
+          groupName: optionalText(120),
+          responseText: optionalText(40000),
+          upload: fileUploadSchema,
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const access = await lmsDb.checkCourseSpaceAccess(ctx.user.id, ctx.user.role, input.courseOfferingId);
+        if (!access.allowed || !access.enrollmentId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Only learners enrolled in this course offering can submit assignment work.",
+          });
+        }
+        if (!input.responseText && !input.upload) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Provide a text response or attach a supported file before saving or submitting.",
+          });
+        }
+        let uploaded = null;
+        try {
+          uploaded = await storeValidatedUpload(
+            `lms-submissions/${input.courseOfferingId}/${access.enrollmentId}`,
+            input.upload,
+          );
+        } catch (err) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "Submission file validation failed.",
+          });
+        }
+        try {
+          const receipt = await lmsDb.submitAssignmentVersion({
+            activityId: input.activityId,
+            enrollmentId: access.enrollmentId,
+            isDraft: input.isDraft,
+            groupName: input.groupName,
+            responseText: input.responseText,
+            attachmentKey: uploaded?.key,
+            attachmentName: uploaded?.fileName,
+            attachmentMimeType: uploaded?.mimeType,
+            attachmentSizeBytes: uploaded?.sizeBytes,
+          });
+          if (!input.isDraft) {
+            await misDb.writeAuditEvent({
+              actorUserId: ctx.user.id,
+              action: "lms.assignment.submitted",
+              entityType: "lmsSubmissionVersion",
+              entityId: String(receipt.versionId),
+              summary: `Learner submitted assignment #${input.activityId} (receipt ${receipt.receiptCode}, attempt #${receipt.attemptNumber}${receipt.isLate ? `, late by ${receipt.daysLate}d` : ""}).`,
+              metadata: { receiptCode: receipt.receiptCode, isLate: receipt.isLate, daysLate: receipt.daysLate },
+            });
+          }
+          return receipt;
+        } catch (err) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "Could not record submission.",
+          });
+        }
+      }),
+
+    gradeAssignment: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          activityId: id,
+          enrollmentId: id,
+          rawScore: z.number().int().min(0).max(1000),
+          feedback: optionalText(10000),
+          rubricScores: z.record(z.string(), z.number().min(0)).optional(),
+          releaseGrade: z.boolean(),
+          annotatedUpload: fileUploadSchema,
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        let annotated = null;
+        try {
+          annotated = await storeValidatedUpload(
+            `lms-annotated-feedback/${input.courseOfferingId}/${input.enrollmentId}`,
+            input.annotatedUpload,
+          );
+        } catch (err) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "Annotated feedback file validation failed.",
+          });
+        }
+        const result = await lmsDb.gradeAssignmentSubmissionVersion({
+          courseOfferingId: input.courseOfferingId,
+          activityId: input.activityId,
+          enrollmentId: input.enrollmentId,
+          rawScore: input.rawScore,
+          feedback: input.feedback,
+          rubricScores: input.rubricScores,
+          annotatedFileKey: annotated?.key,
+          annotatedFileName: annotated?.fileName,
+          releaseGrade: input.releaseGrade,
+          gradedByUserId: ctx.user.id,
+        });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: input.releaseGrade ? "lms.assignment.grade_released" : "lms.assignment.grade_saved_draft",
+          entityType: "activitySubmission",
+          entityId: `${input.activityId}:${input.enrollmentId}`,
+          summary: `${input.releaseGrade ? "Released" : "Saved draft"} assignment grade (raw: ${input.rawScore}, final: ${result.finalScore}, penalty: -${result.penaltyPoints}).`,
+        });
+        return result;
+      }),
+
+    createQuestion: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          topic: z.string().trim().min(2).max(120),
+          questionType: z.enum(quizQuestionTypeValues),
+          prompt: z.string().trim().min(3).max(5000),
+          options: z.array(z.string().trim().min(1).max(500)).default([]),
+          correctAnswer: z.union([z.string(), z.array(z.string())]),
+          explanation: optionalText(2000),
+          defaultPoints: z.number().int().min(1).max(100),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        const questionId = await lmsDb.createQuestionBankEntry({
+          ...input,
+          createdByUserId: ctx.user.id,
+        });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.questionBank.created",
+          entityType: "lmsQuestionBank",
+          entityId: String(questionId),
+          summary: `Added ${input.questionType} question to topic "${input.topic}".`,
+        });
+        return { id: questionId };
+      }),
+
+    createQuiz: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          moduleId: id.optional(),
+          categoryId: id.optional(),
+          title: z.string().trim().min(2).max(180),
+          instructions: optionalText(10000),
+          status: z.enum(publicationStatusValues),
+          publishAt: z.coerce.date().optional(),
+          availableFrom: z.coerce.date().optional(),
+          dueAt: z.coerce.date().optional(),
+          timeLimitMinutes: z.number().int().min(1).max(360),
+          maxAttempts: z.number().int().min(1).max(20),
+          passMarkPercent: z.number().int().min(0).max(100),
+          randomizeQuestions: z.boolean(),
+          randomizeOptions: z.boolean(),
+          reviewPolicy: z.enum(quizReviewPolicyValues),
+          questionBankIds: z.array(id).min(1, "Select at least one question from the question bank."),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        const quizId = await lmsDb.createQuizWithQuestions({
+          ...input,
+          createdByUserId: ctx.user.id,
+        });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.quiz.created",
+          entityType: "lmsQuiz",
+          entityId: String(quizId),
+          summary: `Created online quiz "${input.title}" (${input.questionBankIds.length} questions, ${input.timeLimitMinutes} mins).`,
+        });
+        return { id: quizId };
+      }),
+
+    startQuizAttempt: protectedProcedure
+      .input(z.object({ courseOfferingId: id, quizId: id }))
+      .mutation(async ({ ctx, input }) => {
+        const access = await lmsDb.checkCourseSpaceAccess(ctx.user.id, ctx.user.role, input.courseOfferingId);
+        if (!access.allowed || !access.enrollmentId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Only enrolled learners can start or resume a quiz attempt." });
+        }
+        try {
+          return await lmsDb.startOrResumeQuizAttempt({
+            quizId: input.quizId,
+            enrollmentId: access.enrollmentId,
+          });
+        } catch (err) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "Could not start quiz attempt.",
+          });
+        }
+      }),
+
+    autosaveQuizAttempt: protectedProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          attemptId: id,
+          answers: z.record(z.string(), z.union([z.string(), z.array(z.string())])),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const access = await lmsDb.checkCourseSpaceAccess(ctx.user.id, ctx.user.role, input.courseOfferingId);
+        if (!access.allowed || !access.enrollmentId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Enrolment required." });
+        }
+        try {
+          return await lmsDb.autosaveQuizAttempt({
+            attemptId: input.attemptId,
+            enrollmentId: access.enrollmentId,
+            answers: input.answers,
+          });
+        } catch (err) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "Could not autosave quiz attempt.",
+          });
+        }
+      }),
+
+    submitQuizAttempt: protectedProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          attemptId: id,
+          answers: z.record(z.string(), z.union([z.string(), z.array(z.string())])),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const access = await lmsDb.checkCourseSpaceAccess(ctx.user.id, ctx.user.role, input.courseOfferingId);
+        if (!access.allowed || !access.enrollmentId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Enrolment required." });
+        }
+        try {
+          const res = await lmsDb.submitQuizAttempt({
+            attemptId: input.attemptId,
+            enrollmentId: access.enrollmentId,
+            answers: input.answers,
+          });
+          await misDb.writeAuditEvent({
+            actorUserId: ctx.user.id,
+            action: "lms.quiz.attempt_submitted",
+            entityType: "lmsQuizAttempt",
+            entityId: String(res.attemptId),
+            summary: `Learner submitted quiz attempt #${res.attemptId} (${res.status}).`,
+          });
+          return res;
+        } catch (err) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "Quiz submission rejected.",
+          });
+        }
+      }),
+
+    gradeQuizAttempt: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          attemptId: id,
+          manualScore: z.number().int().min(0).max(500),
+          instructorFeedback: optionalText(5000),
+          releaseGrade: z.boolean(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        const updated = await lmsDb.gradeQuizAttemptInstructor({
+          ...input,
+          gradedByUserId: ctx.user.id,
+        });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.quiz.attempt_graded",
+          entityType: "lmsQuizAttempt",
+          entityId: String(input.attemptId),
+          summary: `Graded quiz attempt #${input.attemptId} (totalScore: ${updated.totalScore}/${updated.maxScore}, released: ${input.releaseGrade}).`,
+        });
+        return updated;
+      }),
+
+    upsertManualGradebookItem: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          enrollmentId: id,
+          categoryId: id.optional(),
+          title: z.string().trim().min(2).max(180),
+          score: z.number().int().min(0).max(1000).nullable(),
+          maxScore: z.number().int().min(1).max(1000),
+          status: z.enum(gradeItemStatusValues),
+          feedback: optionalText(5000),
+          changeReason: optionalText(500),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        try {
+          const res = await lmsDb.upsertManualGradebookItem({
+            ...input,
+            actorUserId: ctx.user.id,
+          });
+          await misDb.writeAuditEvent({
+            actorUserId: ctx.user.id,
+            action: res.wasReleased ? "lms.gradebook.released_grade_amended" : "lms.gradebook.item_upserted",
+            entityType: "lmsGradebookEntry",
+            entityId: `${input.courseOfferingId}:${input.enrollmentId}:${input.title}`,
+            summary: `${res.wasReleased ? "Amended released" : "Updated"} gradebook item "${input.title}" (${input.score ?? "—"}/${input.maxScore}, status: ${input.status}).`,
+            metadata: {
+              previousScore: res.previousScore,
+              newScore: input.score,
+              changeReason: input.changeReason ?? null,
+            },
+          });
+          return { success: true };
+        } catch (err) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "Could not update gradebook item.",
+          });
+        }
+      }),
+
+    publishOfficialCourseGrade: academicProcedure
+      .input(z.object({ courseOfferingId: id, enrollmentId: id }))
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        try {
+          const published = await lmsDb.publishCourseGradeToOfficialRecord({
+            courseOfferingId: input.courseOfferingId,
+            enrollmentId: input.enrollmentId,
+            actorUserId: ctx.user.id,
+          });
+          await misDb.writeAuditEvent({
+            actorUserId: ctx.user.id,
+            action: "lms.grade.published_to_official_record",
+            entityType: "enrollment",
+            entityId: String(input.enrollmentId),
+            summary: `Published calculated LMS course grade (${published.score}% / ${published.letterGrade}) to official MIS academic record.`,
+            metadata: published,
+          });
+          return published;
+        } catch (err) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "Could not publish official grade.",
+          });
+        }
+      }),
+
+    createAnnouncement: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          title: z.string().trim().min(3).max(180),
+          body: z.string().trim().min(5).max(10000),
+          status: z.enum(publicationStatusValues),
+          publishAt: z.coerce.date().optional(),
+          pinned: z.boolean().default(false),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        const announcementId = await lmsDb.createAnnouncement({
+          ...input,
+          authorUserId: ctx.user.id,
+        });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.announcement.created",
+          entityType: "lmsAnnouncement",
+          entityId: String(announcementId),
+          summary: `Posted course announcement "${input.title}" (${input.status}).`,
+        });
+        return { id: announcementId };
+      }),
+
+    createDiscussionTopic: protectedProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          moduleId: id.optional(),
+          title: z.string().trim().min(3).max(180),
+          body: z.string().trim().min(5).max(10000),
+          pinned: z.boolean().optional(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const access = await lmsDb.checkCourseSpaceAccess(ctx.user.id, ctx.user.role, input.courseOfferingId);
+        if (!access.allowed) throw new TRPCError({ code: "FORBIDDEN" });
+        const topicId = await lmsDb.createDiscussionTopic({
+          ...input,
+          pinned: access.mode === "staff" ? input.pinned : false,
+          authorUserId: ctx.user.id,
+        });
+        return { id: topicId };
+      }),
+
+    createDiscussionReply: protectedProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          topicId: id,
+          body: z.string().trim().min(2).max(10000),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const access = await lmsDb.checkCourseSpaceAccess(ctx.user.id, ctx.user.role, input.courseOfferingId);
+        if (!access.allowed) throw new TRPCError({ code: "FORBIDDEN" });
+        try {
+          const replyId = await lmsDb.createDiscussionReply({
+            ...input,
+            authorUserId: ctx.user.id,
+          });
+          return { id: replyId };
+        } catch (err) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: err instanceof Error ? err.message : "Could not post reply.",
+          });
+        }
+      }),
+
+    flagDiscussionItem: protectedProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          targetType: z.enum(["topic", "reply"]),
+          targetId: id,
+          reason: z.string().trim().min(3).max(255),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const access = await lmsDb.checkCourseSpaceAccess(ctx.user.id, ctx.user.role, input.courseOfferingId);
+        if (!access.allowed) throw new TRPCError({ code: "FORBIDDEN" });
+        await lmsDb.moderateDiscussionItem({
+          courseOfferingId: input.courseOfferingId,
+          targetType: input.targetType,
+          targetId: input.targetId,
+          moderationStatus: "flagged",
+          flagReason: input.reason,
+        });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.discussion.flagged",
+          entityType: input.targetType === "topic" ? "lmsDiscussionTopic" : "lmsDiscussionReply",
+          entityId: String(input.targetId),
+          summary: `Flagged discussion ${input.targetType} #${input.targetId}: ${input.reason}`,
+        });
+        return { success: true };
+      }),
+
+    moderateDiscussionItem: academicProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          targetType: z.enum(["topic", "reply"]),
+          targetId: id,
+          moderationStatus: z.enum(["active", "flagged", "hidden"]),
+          locked: z.boolean().optional(),
+          flagReason: optionalText(255),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.courseOfferingId);
+        await lmsDb.moderateDiscussionItem(input);
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.discussion.moderated",
+          entityType: input.targetType === "topic" ? "lmsDiscussionTopic" : "lmsDiscussionReply",
+          entityId: String(input.targetId),
+          summary: `Moderated discussion ${input.targetType} #${input.targetId} -> ${input.moderationStatus}${input.locked !== undefined ? ` (locked: ${input.locked})` : ""}.`,
+        });
+        return { success: true };
+      }),
+
+    sendCourseMessage: protectedProcedure
+      .input(
+        z.object({
+          courseOfferingId: id,
+          recipientUserId: id,
+          subject: z.string().trim().min(2).max(180),
+          body: z.string().trim().min(2).max(10000),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const access = await lmsDb.checkCourseSpaceAccess(ctx.user.id, ctx.user.role, input.courseOfferingId);
+        if (!access.allowed) throw new TRPCError({ code: "FORBIDDEN" });
+        const messageId = await lmsDb.sendCourseMessage({
+          ...input,
+          senderUserId: ctx.user.id,
+        });
+        return { id: messageId };
+      }),
+
+    markNotificationRead: protectedProcedure
+      .input(z.object({ notificationId: id }))
+      .mutation(async ({ ctx, input }) => {
+        await lmsDb.markNotificationRead({ notificationId: input.notificationId, userId: ctx.user.id });
+        return { success: true };
+      }),
+
+    updateNotificationPreferences: protectedProcedure
+      .input(
+        z.object({
+          announcements: z.boolean(),
+          dueDates: z.boolean(),
+          submissions: z.boolean(),
+          grades: z.boolean(),
+          discussions: z.boolean(),
+          messages: z.boolean(),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        await lmsDb.updateNotificationPreferences({ userId: ctx.user.id, ...input });
+        return { success: true };
+      }),
+
+    previewCourseCopy: academicProcedure
+      .input(z.object({ sourceOfferingId: id, targetOfferingId: id }))
+      .query(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.sourceOfferingId);
+        await assertOfferingAccess(ctx.user, input.targetOfferingId);
+        return lmsDb.previewCourseCopy(input);
+      }),
+
+    executeCourseCopy: academicProcedure
+      .input(z.object({ sourceOfferingId: id, targetOfferingId: id }))
+      .mutation(async ({ ctx, input }) => {
+        await assertOfferingAccess(ctx.user, input.sourceOfferingId);
+        await assertOfferingAccess(ctx.user, input.targetOfferingId);
+        const copied = await lmsDb.executeCourseCopy({
+          ...input,
+          actorUserId: ctx.user.id,
+        });
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.course.copied",
+          entityType: "courseOffering",
+          entityId: String(input.targetOfferingId),
+          summary: `Copied LMS course structure from offering #${input.sourceOfferingId} to #${input.targetOfferingId} (${copied.modulesCount} modules, ${copied.quizzesCount} quizzes; private learner data excluded).`,
+          metadata: copied,
+        });
+        return copied;
+      }),
+
+    adminOperationalReport: administratorProcedure
+      .input(z.object({ courseOfferingId: id.optional() }).optional())
+      .query(({ input }) => lmsDb.getAdminLmsOperationalReport(input?.courseOfferingId)),
+
+    exportAdminReportCsv: administratorProcedure
+      .input(z.object({ courseOfferingId: id.optional() }).optional())
+      .mutation(async ({ ctx, input }) => {
+        const csv = await lmsDb.exportAdminLmsReportCsv(input?.courseOfferingId);
+        await misDb.writeAuditEvent({
+          actorUserId: ctx.user.id,
+          action: "lms.report.csv_exported",
+          entityType: "courseOffering",
+          entityId: input?.courseOfferingId ? String(input.courseOfferingId) : "all",
+          summary: `Exported LMS operational participation and assessment CSV report.`,
+        });
+        return {
+          filename: `lms-operational-report-${new Date().toISOString().slice(0, 10)}.csv`,
+          csv,
+        };
+      }),
+
+    seedDemoCourse: protectedProcedure.mutation(async ({ ctx }) => {
+      if (!localAuthEnabled()) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Sample course provisioning is only available in local/demo environments.",
+        });
+      }
+      const seeded = await lmsDb.seedLocalDemoCourse(ctx.user.id);
+      await misDb.writeAuditEvent({
+        actorUserId: ctx.user.id,
+        action: "lms.demo_course.provisioned",
+        entityType: "courseOffering",
+        entityId: String(seeded.offeringId),
+        summary: `Provisioned integrated MIS+LMS sample course ${seeded.courseCode} (Offering #${seeded.offeringId}).`,
+      });
+      return seeded;
+    }),
   }),
 });
 

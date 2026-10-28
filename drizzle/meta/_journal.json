@@ -64,6 +64,13 @@
       "when": 1790745600000,
       "tag": "0008_learning_progress",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1793140000000,
+      "tag": "0009_lms_platform",
+      "breakpoints": true
     }
   ]
 }

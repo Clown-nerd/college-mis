@@ -534,6 +534,497 @@ export const auditEvents = mysqlTable(
   ],
 );
 
+export const lmsPublicationStatusValues = ["draft", "published", "scheduled", "archived"] as const;
+export const lmsLatePolicyValues = ["accept_with_penalty", "accept_no_penalty", "reject_after_due"] as const;
+export const lmsQuestionTypeValues = ["multiple_choice", "multiple_select", "true_false", "short_answer", "essay"] as const;
+export const lmsQuizReviewPolicyValues = ["immediate", "after_due", "after_release", "never"] as const;
+export const lmsGradeStatusValues = ["missing", "submitted", "exempt", "draft_grade", "released"] as const;
+
+export const lmsCourseSpaces = mysqlTable(
+  "lmsCourseSpaces",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    courseOfferingId: int("courseOfferingId")
+      .notNull()
+      .references(() => courseOfferings.id),
+    overview: text("overview"),
+    learningOutcomes: text("learningOutcomes"),
+    instructorBio: text("instructorBio"),
+    officeHours: varchar("officeHours", { length: 240 }),
+    gradingPolicy: text("gradingPolicy"),
+    latePenaltyPercentPerDay: int("latePenaltyPercentPerDay").default(10).notNull(),
+    allowDiscussions: boolean("allowDiscussions").default(true).notNull(),
+    allowPrivateMessages: boolean("allowPrivateMessages").default(true).notNull(),
+    proctoringNoticeAcknowledged: boolean("proctoringNoticeAcknowledged").default(true).notNull(),
+    retentionDays: int("retentionDays").default(365).notNull(),
+    updatedByUserId: int("updatedByUserId").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [uniqueIndex("lms_course_spaces_offering_unique").on(table.courseOfferingId)],
+);
+
+export const lmsModules = mysqlTable(
+  "lmsModules",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    courseOfferingId: int("courseOfferingId")
+      .notNull()
+      .references(() => courseOfferings.id),
+    title: varchar("title", { length: 180 }).notNull(),
+    description: text("description"),
+    weekNumber: int("weekNumber"),
+    position: int("position").default(1).notNull(),
+    status: mysqlEnum("status", lmsPublicationStatusValues).default("published").notNull(),
+    publishAt: timestamp("publishAt"),
+    unlockAt: timestamp("unlockAt"),
+    createdByUserId: int("createdByUserId")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("lms_modules_offering_pos_idx").on(table.courseOfferingId, table.position),
+    index("lms_modules_status_idx").on(table.status),
+  ],
+);
+
+export const lmsModuleItems = mysqlTable(
+  "lmsModuleItems",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    moduleId: int("moduleId")
+      .notNull()
+      .references(() => lmsModules.id),
+    courseOfferingId: int("courseOfferingId")
+      .notNull()
+      .references(() => courseOfferings.id),
+    itemType: mysqlEnum("itemType", ["page", "file", "link", "video", "assignment", "quiz", "discussion"]).notNull(),
+    title: varchar("title", { length: 180 }).notNull(),
+    summary: varchar("summary", { length: 500 }),
+    bodyHtml: text("bodyHtml"),
+    externalUrl: varchar("externalUrl", { length: 1024 }),
+    fileKey: varchar("fileKey", { length: 512 }),
+    fileName: varchar("fileName", { length: 255 }),
+    fileMimeType: varchar("fileMimeType", { length: 120 }),
+    fileSizeBytes: int("fileSizeBytes"),
+    captionsUrl: varchar("captionsUrl", { length: 1024 }),
+    transcriptText: text("transcriptText"),
+    linkedActivityId: int("linkedActivityId").references(() => courseActivities.id),
+    linkedQuizId: int("linkedQuizId"),
+    position: int("position").default(1).notNull(),
+    estimatedMinutes: int("estimatedMinutes").default(20).notNull(),
+    status: mysqlEnum("status", lmsPublicationStatusValues).default("published").notNull(),
+    publishAt: timestamp("publishAt"),
+    createdByUserId: int("createdByUserId")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("lms_module_items_module_pos_idx").on(table.moduleId, table.position),
+    index("lms_module_items_offering_idx").on(table.courseOfferingId),
+  ],
+);
+
+export const lmsItemCompletions = mysqlTable(
+  "lmsItemCompletions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    moduleItemId: int("moduleItemId")
+      .notNull()
+      .references(() => lmsModuleItems.id),
+    enrollmentId: int("enrollmentId")
+      .notNull()
+      .references(() => enrollments.id),
+    completedAt: timestamp("completedAt").defaultNow().notNull(),
+  },
+  table => [
+    uniqueIndex("lms_item_completions_unique").on(table.moduleItemId, table.enrollmentId),
+    index("lms_item_completions_enrollment_idx").on(table.enrollmentId),
+  ],
+);
+
+export const lmsGradeCategories = mysqlTable(
+  "lmsGradeCategories",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    courseOfferingId: int("courseOfferingId")
+      .notNull()
+      .references(() => courseOfferings.id),
+    name: varchar("name", { length: 120 }).notNull(),
+    weightPercent: int("weightPercent").notNull(),
+    position: int("position").default(1).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [index("lms_grade_categories_offering_idx").on(table.courseOfferingId)],
+);
+
+export const lmsAssignmentConfigs = mysqlTable(
+  "lmsAssignmentConfigs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    activityId: int("activityId")
+      .notNull()
+      .references(() => courseActivities.id),
+    courseOfferingId: int("courseOfferingId")
+      .notNull()
+      .references(() => courseOfferings.id),
+    moduleId: int("moduleId").references(() => lmsModules.id),
+    categoryId: int("categoryId").references(() => lmsGradeCategories.id),
+    availableFrom: timestamp("availableFrom"),
+    lockAt: timestamp("lockAt"),
+    latePolicy: mysqlEnum("latePolicy", lmsLatePolicyValues).default("accept_with_penalty").notNull(),
+    latePenaltyPercentPerDay: int("latePenaltyPercentPerDay").default(10).notNull(),
+    maxAttempts: int("maxAttempts").default(3).notNull(),
+    allowResubmission: boolean("allowResubmission").default(true).notNull(),
+    submissionMode: mysqlEnum("submissionMode", ["individual", "group"]).default("individual").notNull(),
+    allowTextResponse: boolean("allowTextResponse").default(true).notNull(),
+    allowFileUpload: boolean("allowFileUpload").default(true).notNull(),
+    rubricJson: json("rubricJson"),
+    attachmentKey: varchar("attachmentKey", { length: 512 }),
+    attachmentName: varchar("attachmentName", { length: 255 }),
+    attachmentMimeType: varchar("attachmentMimeType", { length: 120 }),
+    status: mysqlEnum("status", lmsPublicationStatusValues).default("published").notNull(),
+    publishAt: timestamp("publishAt"),
+    gradesReleased: boolean("gradesReleased").default(false).notNull(),
+    gradesReleasedAt: timestamp("gradesReleasedAt"),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    uniqueIndex("lms_assignment_configs_activity_unique").on(table.activityId),
+    index("lms_assignment_configs_offering_idx").on(table.courseOfferingId),
+  ],
+);
+
+export const lmsAssignmentExtensions = mysqlTable(
+  "lmsAssignmentExtensions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    activityId: int("activityId")
+      .notNull()
+      .references(() => courseActivities.id),
+    enrollmentId: int("enrollmentId")
+      .notNull()
+      .references(() => enrollments.id),
+    extendedDueAt: timestamp("extendedDueAt").notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    grantedByUserId: int("grantedByUserId")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    uniqueIndex("lms_assignment_extensions_unique").on(table.activityId, table.enrollmentId),
+    index("lms_assignment_extensions_enrollment_idx").on(table.enrollmentId),
+  ],
+);
+
+export const lmsSubmissionVersions = mysqlTable(
+  "lmsSubmissionVersions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    activityId: int("activityId")
+      .notNull()
+      .references(() => courseActivities.id),
+    enrollmentId: int("enrollmentId")
+      .notNull()
+      .references(() => enrollments.id),
+    attemptNumber: int("attemptNumber").default(1).notNull(),
+    isDraft: boolean("isDraft").default(false).notNull(),
+    groupName: varchar("groupName", { length: 120 }),
+    responseText: text("responseText"),
+    attachmentKey: varchar("attachmentKey", { length: 512 }),
+    attachmentName: varchar("attachmentName", { length: 255 }),
+    attachmentMimeType: varchar("attachmentMimeType", { length: 120 }),
+    attachmentSizeBytes: int("attachmentSizeBytes"),
+    receiptCode: varchar("receiptCode", { length: 48 }).notNull(),
+    isLate: boolean("isLate").default(false).notNull(),
+    daysLate: int("daysLate").default(0).notNull(),
+    submittedAt: timestamp("submittedAt").defaultNow().notNull(),
+    rawScore: int("rawScore"),
+    latePenaltyPoints: int("latePenaltyPoints").default(0).notNull(),
+    finalScore: int("finalScore"),
+    rubricScoresJson: json("rubricScoresJson"),
+    feedback: text("feedback"),
+    annotatedFileKey: varchar("annotatedFileKey", { length: 512 }),
+    annotatedFileName: varchar("annotatedFileName", { length: 255 }),
+    gradeStatus: mysqlEnum("gradeStatus", ["draft", "released"]).default("draft").notNull(),
+    releasedAt: timestamp("releasedAt"),
+    gradedByUserId: int("gradedByUserId").references(() => users.id),
+    gradedAt: timestamp("gradedAt"),
+  },
+  table => [
+    index("lms_sub_versions_activity_enrollment_idx").on(table.activityId, table.enrollmentId),
+    uniqueIndex("lms_sub_versions_receipt_unique").on(table.receiptCode),
+  ],
+);
+
+export const lmsQuestionBank = mysqlTable(
+  "lmsQuestionBank",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    courseId: int("courseId").references(() => courses.id),
+    courseOfferingId: int("courseOfferingId")
+      .notNull()
+      .references(() => courseOfferings.id),
+    topic: varchar("topic", { length: 120 }).notNull(),
+    questionType: mysqlEnum("questionType", lmsQuestionTypeValues).notNull(),
+    prompt: text("prompt").notNull(),
+    optionsJson: json("optionsJson").notNull(),
+    correctAnswerJson: json("correctAnswerJson").notNull(),
+    explanation: text("explanation"),
+    defaultPoints: int("defaultPoints").default(10).notNull(),
+    createdByUserId: int("createdByUserId")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    index("lms_question_bank_offering_idx").on(table.courseOfferingId),
+    index("lms_question_bank_topic_idx").on(table.topic),
+  ],
+);
+
+export const lmsQuizzes = mysqlTable(
+  "lmsQuizzes",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    courseOfferingId: int("courseOfferingId")
+      .notNull()
+      .references(() => courseOfferings.id),
+    moduleId: int("moduleId").references(() => lmsModules.id),
+    categoryId: int("categoryId").references(() => lmsGradeCategories.id),
+    title: varchar("title", { length: 180 }).notNull(),
+    instructions: text("instructions"),
+    status: mysqlEnum("status", lmsPublicationStatusValues).default("published").notNull(),
+    publishAt: timestamp("publishAt"),
+    availableFrom: timestamp("availableFrom"),
+    dueAt: timestamp("dueAt"),
+    timeLimitMinutes: int("timeLimitMinutes").default(30).notNull(),
+    maxAttempts: int("maxAttempts").default(2).notNull(),
+    passMarkPercent: int("passMarkPercent").default(50).notNull(),
+    randomizeQuestions: boolean("randomizeQuestions").default(false).notNull(),
+    randomizeOptions: boolean("randomizeOptions").default(false).notNull(),
+    reviewPolicy: mysqlEnum("reviewPolicy", lmsQuizReviewPolicyValues).default("after_release").notNull(),
+    gradesReleased: boolean("gradesReleased").default(false).notNull(),
+    createdByUserId: int("createdByUserId")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [index("lms_quizzes_offering_idx").on(table.courseOfferingId)],
+);
+
+export const lmsQuizQuestions = mysqlTable(
+  "lmsQuizQuestions",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    quizId: int("quizId")
+      .notNull()
+      .references(() => lmsQuizzes.id),
+    questionBankId: int("questionBankId")
+      .notNull()
+      .references(() => lmsQuestionBank.id),
+    position: int("position").default(1).notNull(),
+    pointsOverride: int("pointsOverride"),
+  },
+  table => [
+    uniqueIndex("lms_quiz_questions_unique").on(table.quizId, table.questionBankId),
+    index("lms_quiz_questions_quiz_idx").on(table.quizId),
+  ],
+);
+
+export const lmsQuizAttempts = mysqlTable(
+  "lmsQuizAttempts",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    quizId: int("quizId")
+      .notNull()
+      .references(() => lmsQuizzes.id),
+    enrollmentId: int("enrollmentId")
+      .notNull()
+      .references(() => enrollments.id),
+    attemptNumber: int("attemptNumber").default(1).notNull(),
+    status: mysqlEnum("status", ["in_progress", "submitted", "auto_graded", "graded", "expired"]).default("in_progress").notNull(),
+    startedAt: timestamp("startedAt").defaultNow().notNull(),
+    expiresAt: timestamp("expiresAt"),
+    lastSavedAt: timestamp("lastSavedAt").defaultNow().notNull(),
+    submittedAt: timestamp("submittedAt"),
+    answersJson: json("answersJson").notNull(),
+    questionOrderJson: json("questionOrderJson").notNull(),
+    autoScore: int("autoScore").default(0).notNull(),
+    manualScore: int("manualScore").default(0).notNull(),
+    totalScore: int("totalScore").default(0).notNull(),
+    maxScore: int("maxScore").default(0).notNull(),
+    passed: boolean("passed"),
+    instructorFeedback: text("instructorFeedback"),
+    gradeReleased: boolean("gradeReleased").default(false).notNull(),
+    gradedByUserId: int("gradedByUserId").references(() => users.id),
+    gradedAt: timestamp("gradedAt"),
+  },
+  table => [
+    index("lms_quiz_attempts_quiz_enrollment_idx").on(table.quizId, table.enrollmentId),
+    index("lms_quiz_attempts_enrollment_idx").on(table.enrollmentId),
+  ],
+);
+
+export const lmsGradebookEntries = mysqlTable(
+  "lmsGradebookEntries",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    courseOfferingId: int("courseOfferingId")
+      .notNull()
+      .references(() => courseOfferings.id),
+    enrollmentId: int("enrollmentId")
+      .notNull()
+      .references(() => enrollments.id),
+    categoryId: int("categoryId").references(() => lmsGradeCategories.id),
+    title: varchar("title", { length: 180 }).notNull(),
+    sourceType: mysqlEnum("sourceType", ["assignment", "quiz", "manual"]).notNull(),
+    sourceId: int("sourceId"),
+    score: int("score"),
+    maxScore: int("maxScore").default(100).notNull(),
+    status: mysqlEnum("status", lmsGradeStatusValues).default("missing").notNull(),
+    feedback: text("feedback"),
+    releasedAt: timestamp("releasedAt"),
+    updatedByUserId: int("updatedByUserId").references(() => users.id),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [
+    index("lms_gradebook_offering_enrollment_idx").on(table.courseOfferingId, table.enrollmentId),
+    index("lms_gradebook_source_idx").on(table.sourceType, table.sourceId),
+  ],
+);
+
+export const lmsAnnouncements = mysqlTable(
+  "lmsAnnouncements",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    courseOfferingId: int("courseOfferingId")
+      .notNull()
+      .references(() => courseOfferings.id),
+    title: varchar("title", { length: 180 }).notNull(),
+    body: text("body").notNull(),
+    status: mysqlEnum("status", lmsPublicationStatusValues).default("published").notNull(),
+    publishAt: timestamp("publishAt"),
+    pinned: boolean("pinned").default(false).notNull(),
+    authorUserId: int("authorUserId")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [index("lms_announcements_offering_idx").on(table.courseOfferingId)],
+);
+
+export const lmsDiscussionTopics = mysqlTable(
+  "lmsDiscussionTopics",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    courseOfferingId: int("courseOfferingId")
+      .notNull()
+      .references(() => courseOfferings.id),
+    moduleId: int("moduleId").references(() => lmsModules.id),
+    title: varchar("title", { length: 180 }).notNull(),
+    body: text("body").notNull(),
+    pinned: boolean("pinned").default(false).notNull(),
+    locked: boolean("locked").default(false).notNull(),
+    moderationStatus: mysqlEnum("moderationStatus", ["active", "flagged", "hidden"]).default("active").notNull(),
+    flagReason: varchar("flagReason", { length: 255 }),
+    authorUserId: int("authorUserId")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [index("lms_discussion_topics_offering_idx").on(table.courseOfferingId)],
+);
+
+export const lmsDiscussionReplies = mysqlTable(
+  "lmsDiscussionReplies",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    topicId: int("topicId")
+      .notNull()
+      .references(() => lmsDiscussionTopics.id),
+    authorUserId: int("authorUserId")
+      .notNull()
+      .references(() => users.id),
+    body: text("body").notNull(),
+    moderationStatus: mysqlEnum("moderationStatus", ["active", "flagged", "hidden"]).default("active").notNull(),
+    flagReason: varchar("flagReason", { length: 255 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [index("lms_discussion_replies_topic_idx").on(table.topicId)],
+);
+
+export const lmsCourseMessages = mysqlTable(
+  "lmsCourseMessages",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    courseOfferingId: int("courseOfferingId")
+      .notNull()
+      .references(() => courseOfferings.id),
+    senderUserId: int("senderUserId")
+      .notNull()
+      .references(() => users.id),
+    recipientUserId: int("recipientUserId")
+      .notNull()
+      .references(() => users.id),
+    subject: varchar("subject", { length: 180 }).notNull(),
+    body: text("body").notNull(),
+    readAt: timestamp("readAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [
+    index("lms_course_messages_offering_idx").on(table.courseOfferingId),
+    index("lms_course_messages_recipient_idx").on(table.recipientUserId),
+    index("lms_course_messages_sender_idx").on(table.senderUserId),
+  ],
+);
+
+export const lmsNotifications = mysqlTable(
+  "lmsNotifications",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id),
+    courseOfferingId: int("courseOfferingId").references(() => courseOfferings.id),
+    category: mysqlEnum("category", ["announcement", "due_date", "submission", "grade_released", "discussion_reply", "message"]).notNull(),
+    title: varchar("title", { length: 180 }).notNull(),
+    body: varchar("body", { length: 500 }).notNull(),
+    linkPath: varchar("linkPath", { length: 255 }),
+    readAt: timestamp("readAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [index("lms_notifications_user_idx").on(table.userId, table.createdAt)],
+);
+
+export const lmsNotificationPreferences = mysqlTable(
+  "lmsNotificationPreferences",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id),
+    announcements: boolean("announcements").default(true).notNull(),
+    dueDates: boolean("dueDates").default(true).notNull(),
+    submissions: boolean("submissions").default(true).notNull(),
+    grades: boolean("grades").default(true).notNull(),
+    discussions: boolean("discussions").default(true).notNull(),
+    messages: boolean("messages").default(true).notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [uniqueIndex("lms_notification_prefs_user_unique").on(table.userId)],
+);
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type UserRole = (typeof userRoleValues)[number];
+
